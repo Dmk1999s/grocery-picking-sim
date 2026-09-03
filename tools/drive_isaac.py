@@ -396,6 +396,7 @@ result = {
     "dock_return_err_m": round(math.hypot(x - dock["x"], y - dock["y"]), 4),
     "min_clearance_m": round(min_clear, 4), "min_clearance_at": min_clear_at, "collision_frames": collide_frames,
     "arm": bool(arm),
+    "teleport": bool(args.teleport),
     "grasp_success": sum(1 for p in picks if p.get("grasp", {}).get("success")) if arm else None,
     "picks": picks,
     "trace": trace,

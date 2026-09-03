@@ -11,9 +11,9 @@
 </p>
 
 <p align="center">
-  <img src="docs/img/drive_chase.gif" width="480" alt="Carter v1 이 시나리오 주문 경로를 주행">
+  <img src="docs/img/drive_arm_chase.gif" width="480" alt="Carter + Franka 가 주문 경로를 주행하며 상품을 집어 바구니에 넣는다">
   <br>
-  <sub>Isaac Sim 물리 시뮬. AMR(Carter v1)이 seed 7 주문 2번의 경로 63 m 를 따라 4곳에 정차하고 도크로 돌아온다 (15배속). 정차 오차 최대 3.7 cm / 2.0°, 충돌 0</sub>
+  <sub>Isaac Sim 물리 시뮬. Carter v1 + Franka 가 seed 7 주문 4번의 경로 76 m 를 따라 4곳에 정차해 상품을 집어 바구니에 넣고 도크로 돌아온다 (20배속). 시도한 파지 3/3 성공, 정차 오차 ≤ 3.7 cm, 충돌 0</sub>
 </p>
 
 <p align="center">
@@ -172,6 +172,41 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 - `tools/verify_drive.py` 가 결과 JSON 을 10항목으로 본다: 완주, 정차 오차, 충돌 0, 거리 비율, 도크 복귀, 궤적이 바닥 안
 - 팔은 아직 없다. 정차 자세·파지 대상 좌표는 JSON 에 있으니 다음은 그 자리에서 팔을 뻗는 것
 
+### 팔 (Carter 위 Franka — 정차 자세에서 집어 바구니에)
+
+<p align="center">
+  <img src="docs/img/arm_grasp_close.png" width="352" alt="스팸 캔 파지 순간">
+  <img src="docs/img/arm_over_bin.png" width="352" alt="바구니 위로 옮기는 중">
+  <br>
+  <sub>왼쪽: 맨 앞 스팸 캔을 통로 방향으로 집는 순간 (뒤 상품이 1 cm 뒤에 붙어 있어 깊이 방향으로는 손가락이 못 들어간다). 오른쪽: 세정제를 상판 뒤 바구니로 옮기는 중. 손은 수평을 유지한다 — 아래로 돌리면 둥근 캔이 빠졌다</sub>
+</p>
+
+<p align="center">
+  <img src="docs/img/reach_study.png" width="520" alt="팔 어깨 높이 × 도달 반경 → 닿는 상품 비율">
+  <br>
+  <sub>팔 사양을 감으로 정하지 않기 위한 스터디. Franka(0.855 m)를 Carter 상판에 얹으면 어깨 1.01 m — 바닥 데크(0단)는 못 닿고 나머지 단은 닿는다 (맨 앞 상품의 77 %)</sub>
+</p>
+
+<p align="center">
+  <img src="docs/img/drive_arm_plan.png" width="520" alt="팔 포함 주행 — 계획 vs 실제 궤적">
+  <br>
+  <sub>팔 포함 주행의 계획(주황)과 실제 궤적(검정 점선). + 는 실제 정차점</sub>
+</p>
+
+`tools/arm_isaac.py` 가 Franka Panda 를 Carter 상판에 얹고, 정차마다 상품을 집어 상판 뒤 바구니에 넣는다. 팔은 별도 관절체를 매 스텝 Carter 자세로 옮겨 태운 것이다 — 정차 중엔 베이스가 서 있으므로 고정 베이스 팔과 같고, 주행 중 상품은 바구니에 있다.
+
+| | seed 7 · ORD_04 |
+|---|---|
+| 순간이동 모드 (정차 자세로 바로) | 파지 3/4 성공. 4번째는 물리 시작 때 넘어진 세정제 — "지금 자세로는 못 집음" 판정 |
+| 주행 포함 (76.5 m, 정차 4곳) | 시도한 파지 3/3 성공 → 바구니. 정차 오차 ≤ 3.7 cm / 2.0°, 충돌 0, 시뮬 249 s / 벽시계 391 s (렌더 포함). 검증 15항목 통과 |
+| 시퀀스 | tuck → 프리그래스프 → 접근 → 닫기(70 N) → 4 cm 들기 → 빼기 → 위로 → 바구니 위 → 두 단계 놓기 → tuck, 약 15 s |
+| 손끝 도달 오차 | ≤ 1.5 mm (관절 드라이브 강성 ×4 전에는 1.5 cm) |
+
+- **어디를 집을지**: 맨 앞 상품, 손가락은 통로 방향으로 닫힌다. 그래서 통로 방향 폭 ≤ 7 cm, 높이 ≥ 7 cm(손 몸통이 선반에 닿지 않게)인 상품만 주문에 들어온다 — 맨 앞 상품의 43 %. 나머지는 흡착이나 위에서 집기가 필요하다는 뜻이고, 그 숫자가 `scenario_NNN.json` 통계에 있다
+- **파지점은 계획이 아니라 지금 상품 자세로** 다시 잡는다 (인식 대용). 물리가 시작되면 넘어지는 상품이 있다. 폭·높이가 규칙 밖이면 `not_graspable_now` 로 기록한다
+- **파지가 되기까지 잡은 것**: 에셋 오른쪽 손가락에 드라이브가 없던 것(7 N → 70 N 양쪽), 관절 보간이 선반을 치던 것(직교 좌표 직선 + slerp), 카레 중 IK 반전(위로 → 바구니 위 → 내리기), 손끝 처짐 1.5 cm(강성 ×4), **손가락 질량 14 g vs 상품 0.4 kg**(50 g 으로 → 미끄러짐 2.3 cm → 0.2 cm), 손을 아래로 돌리면 캔이 빠지는 것(수평 유지), 놓을 때 튕김(두 단계). 전부 `docs/LOG.md` (7)
+- 순간이동 모드(`--teleport`)는 주행을 건너뛰고 정차 자세로 바로 옮겨 1.5 분에 4회 파지를 돌린다. 파지 물리를 잡는 데 15번쯤 썼다
+
 ## 검증
 
 생성할 때마다 자동으로 175항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
@@ -207,7 +242,9 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 | `tools/plan_scenario.py` | ✅ | 시나리오 평면도 (경로·정차·흔들림 오버레이) |
 | `tools/drive_isaac.py` | ✅ | Isaac Sim 에서 Carter v1 이 주문 경로를 물리 주행 (체이스·1인칭 녹화, GIF) |
 | `tools/verify_drive.py` | ✅ | 주행 결과 검증 10항목 |
-| 팔 | ⬜ | 정차 자세에서 파지 대상으로 팔 뻗기 → 검출 → 파지 |
+| `tools/arm_isaac.py` | ✅ | Carter 위 Franka: 정차 자세에서 집어 바구니에 (Lula IK, 순간이동 실험 모드) |
+| `tools/reach_study.py` | ✅ | 팔 어깨 높이 × 도달 반경 스터디 |
+| 인식 | ⬜ | 지금은 시뮬 참값(현재 AABB). 카메라 → 검출 → 파지점 |
 
 ## 쓰는 법
 
@@ -256,6 +293,11 @@ source ~/.isaac_cache_env
 ~/isaac6-venv/bin/python -m tools.drive_isaac out/scenario_007.json --order 2 --record   # → out/drive/drive_007_ORD_02.json + 프레임 + GIF
 .venv/bin/python -m tools.verify_drive out/drive/drive_007_ORD_02.json                    # 10항목
 .venv/bin/python -m tools.plan_scenario out/scenario_007.json --order 2 --drive out/drive/drive_007_ORD_02.json   # 계획 vs 실제 궤적
+
+# 팔: 정차마다 집어 바구니에. --teleport 는 주행 없이 정차 자세로 바로 (파지 실험, 1.5 분)
+~/isaac6-venv/bin/python -m tools.drive_isaac out/scenario_007.json --order 4 --arm --teleport --record --out out/drive_arm
+~/isaac6-venv/bin/python -m tools.drive_isaac out/scenario_007.json --order 4 --arm --record --out out/drive_arm_full
+.venv/bin/python -m tools.reach_study out/store_stocked.usda --out docs/img/reach_study.png
 ```
 
 노트북에는 [Isaac Sim WebRTC Streaming Client](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/manual_livestream_clients.html) 를 설치하고 인스턴스 공인 IP 로 접속한다. 보안그룹에 내 IP 에서 위 포트 인바운드가 필요하다.
@@ -265,7 +307,7 @@ source ~/.isaac_cache_env
 1. **실측** — 마트 한 곳에서 부통로 1~2개. 타일·상품을 자로 쓰는 절차는 `docs/SURVEY.md`
 2. **상품 확장** — YCB 는 마트 상품이 32종뿐이라 통로가 단조롭다. Google Scanned Objects 로 넓힌다
 3. ~~**`scenario.py`**~~ — 완료. 다음은 가림(앞 상품이 뒤 상품을 가리는 배치)·기울어짐(90° 가 아닌 각) 추가
-4. ~~**AMR 주행**~~ — 완료 (Carter v1, 유니사이클 추종). 다음: 로컬라이제이션(참값 대신 라이다/오도메트리), 팔 마운트(리프트 높이는 도달 통계 57 % 로 정한다) → 상품 검출 → 파지 → 회수
+4. ~~**AMR 주행**~~ ~~**팔 파지**~~ — 완료 (Carter v1 + Franka). 다음: 인식(카메라 → 검출 → 파지점, 지금은 참값), 로컬라이제이션, 0단 도달(리프트), 폭 > 7 cm 상품(흡착), 납작한 상품(위에서 집기)
 5. **μ 스윕** — 선반·그리퍼 마찰계수는 실측 불가능한 값이라 하나로 고정하지 않고 스윕 축으로 둔다
 
 ## 레포 구조
@@ -283,7 +325,9 @@ tools/
   verify_scenario.py 시나리오 검증 (도달·정차·경로·재현성)
   plan_scenario.py   시나리오 평면도 (경로 오버레이, --drive 로 실제 궤적)
   drive_isaac.py     Isaac Sim 에서 AMR 주행 + 녹화
-  verify_drive.py    주행 결과 검증
+  verify_drive.py    주행·파지 결과 검증
+  arm_isaac.py       Carter 위 Franka 파지 모듈 (drive_isaac --arm)
+  reach_study.py     팔 어깨 높이 × 도달 스터디
   frames_to_gif.py   프레임 → README 용 GIF
   verify_shelf.py 진열대 검증
   verify_store.py 매장 검증 + AMR 통행

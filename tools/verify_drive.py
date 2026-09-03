@@ -35,7 +35,8 @@ def main() -> int:
     c = Check()
     print(f"\n{args.json}  ({d['order']}, {d['robot']})\n")
 
-    c.true("끝까지 주행함 (스텝 한도 안)", d["completed"], f"시뮬 {d['sim_time_s']} s, 벽시계 {d['wall_time_s']} s")
+    tele = d.get("teleport", False)      # 순간이동 모드(파지 실험)는 주행 항목을 건너뛴다
+    c.true("끝까지 주행함 (스텝 한도 안)", d["completed"], f"시뮬 {d['sim_time_s']} s, 벽시계 {d['wall_time_s']} s" + (" (순간이동)" if tele else ""))
     c.eq("정차 수 = 주문 품목 수", len(d["picks"]), len(order["lines"]), tol=0)
     worst_pos = max((p["pos_err_m"] for p in d["picks"]), default=0)
     worst_yaw = max((abs(p["yaw_err_deg"]) for p in d["picks"]), default=0)
@@ -44,17 +45,21 @@ def main() -> int:
     c.true("정차가 주문 품목과 1:1", sorted(p["line"] for p in d["picks"]) == list(range(len(order["lines"]))), "")
     c.true("충돌 프레임 0", d["collision_frames"] == 0, f"{d['collision_frames']}프레임")
     c.true("최소 간격 ≥ 0 (장애물 안에 들어간 적 없음)", d["min_clearance_m"] >= 0, f"{d['min_clearance_m'] * 100:.1f} cm @ {d['min_clearance_at']}")
-    ratio = d["driven_length_m"] / d["planned_length_m"]
-    c.true("주행 거리 / 계획 거리 0.95~1.25", 0.95 <= ratio <= 1.25, f"{d['driven_length_m']} / {d['planned_length_m']} = {ratio:.3f}")
-    c.true(f"도크 복귀 오차 ≤ {POS_TOL * 100:.0f} cm", d["dock_return_err_m"] <= POS_TOL, f"{d['dock_return_err_m'] * 100:.1f} cm")
+    if not tele:
+        ratio = d["driven_length_m"] / d["planned_length_m"]
+        c.true("주행 거리 / 계획 거리 0.95~1.25", 0.95 <= ratio <= 1.25, f"{d['driven_length_m']} / {d['planned_length_m']} = {ratio:.3f}")
+        c.true(f"도크 복귀 오차 ≤ {POS_TOL * 100:.0f} cm", d["dock_return_err_m"] <= POS_TOL, f"{d['dock_return_err_m'] * 100:.1f} cm")
     if d.get("arm"):
         gs = [p.get("grasp", {}) for p in d["picks"]]
-        c.true("모든 정차에서 파지 시도가 끝까지 감 (phase done)", all(g.get("phase") == "done" for g in gs),
-               ", ".join(g.get("phase", "?") for g in gs))
-        n_ok = sum(1 for g in gs if g.get("success"))
-        c.true("파지 성공 ≥ 절반", n_ok * 2 >= len(gs), f"{n_ok}/{len(gs)}  (들림 {sum(1 for g in gs if g.get('lifted'))}, 바구니 {sum(1 for g in gs if g.get('in_bin'))})")
-        ik = max((g.get("ik_err_max_m", 0) or 0) for g in gs)
-        c.true("IK 위치 오차 ≤ 1 cm", ik <= 0.01, f"최대 {ik * 1000:.1f} mm")
+        # 끝까지 갔거나(done), 현재 자세로는 못 집는다고 스스로 판단한 것(not_graspable_now)만 정상 종료
+        c.true("모든 정차에서 파지 시도가 정상 종료 (done / not_graspable_now)",
+               all(g.get("phase") in ("done", "not_graspable_now") for g in gs), ", ".join(g.get("phase", "?") for g in gs))
+        tried = [g for g in gs if g.get("phase") == "done"]
+        n_ok = sum(1 for g in tried if g.get("success"))
+        c.true("시도한 파지 중 성공 ≥ 절반", n_ok * 2 >= len(tried), f"{n_ok}/{len(tried)} (미시도 {len(gs) - len(tried)}: 넘어짐 등)  들림 {sum(1 for g in tried if g.get('lifted'))}, 바구니 {sum(1 for g in tried if g.get('in_bin'))}")
+        reach = max((max(g.get("pre_err_m", 0) or 0, g.get("grasp_err_m", 0) or 0) for g in tried), default=0)
+        c.true("손끝이 프리그래스프·파지점에 도달 (오차 ≤ 1 cm)", reach <= 0.01, f"최대 {reach * 1000:.1f} mm")
+        c.true("잡은 상품을 카레 내내 놓치지 않음", all(g.get("held_through_carry", True) for g in tried if g.get("in_bin")), "")
         dist = sum(g.get("disturbed_neighbors", 0) for g in gs)
         c.true("이웃 상품 교란(> 2 cm) 없음", dist == 0, f"{dist}개")
     lx, ly = STORE.footprint(SHELF)
