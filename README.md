@@ -5,16 +5,16 @@
 `Python → USD → Isaac Sim` · 환경을 손으로 만들지 않고 **치수 상수에서 생성**한다 · 생성 결과는 **되읽어 숫자로 검증**한다
 
 <p align="center">
-  <img src="docs/img/isaac_overview.png" width="720" alt="Isaac Sim 렌더 — 매장 전체">
+  <img src="docs/img/isaac_stocked_overview.png" width="720" alt="Isaac Sim 렌더 — 상품이 채워진 매장 전체">
   <br>
-  <sub>Isaac Sim RTX 렌더. 파이썬이 생성한 USD 를 그대로 올린 것 (25.6 × 17.6 m, 부통로 8개, 진열대 137대). 상품은 아직 없다</sub>
+  <sub>Isaac Sim RTX 렌더. 파이썬이 생성한 USD 를 그대로 올린 것. 25.6 × 17.6 m, 부통로 8개, 진열대 137대, YCB 스캔 상품 9,864개</sub>
 </p>
 
 <p align="center">
-  <img src="docs/img/isaac_aisle.png" width="352" alt="부통로 안 눈높이">
-  <img src="docs/img/isaac_main_aisle.png" width="352" alt="앞 주통로에서 본 엔드캡 열">
+  <img src="docs/img/isaac_stocked_aisle.png" width="352" alt="부통로 안 눈높이">
+  <img src="docs/img/isaac_stocked_shelf_face.png" width="352" alt="곤돌라 정면 — 팔 카메라 시야">
   <br>
-  <sub>왼쪽: 부통로 0 안, 사람 눈높이. 왼편이 벽면 진열대(2.4 m), 오른편이 곤돌라(1.8 m). 오른쪽: 앞 주통로에서 엔드캡 열과 기둥</sub>
+  <sub>왼쪽: 부통로 0 안, 사람 눈높이. 왼편이 벽면 진열대(2.4 m), 오른편이 곤돌라(1.8 m). 오른쪽: 곤돌라 정면, 로봇 팔 카메라가 볼 시야. 상품은 실물 스캔(YCB)</sub>
 </p>
 
 ---
@@ -86,6 +86,14 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 - **단마다 여유 높이가 다르다** — 최상단은 위에 판이 없다. 하나의 값으로 퉁치면 안 들어가는 상품을 배치하게 된다
 - 슬롯마다 "들어갈 수 있는 상품 최대 치수"를 같이 들고 있어 배치 단계에서 안 맞는 에셋을 거른다
 
+### 상품 (YCB 실물 스캔)
+
+- **모델링하지 않고 스캔 데이터셋을 쓴다.** YCB 구글 스캔 메시 85개를 받아 USD 로 바꾸고, 그중 마트에서 팔 만한 32종(캔·박스·병·과일·생활용품·주방·문구·완구·스포츠)만 쓴다
+- 에셋마다 **치수는 메시에서, 질량은 YCB 논문 표에서** 가져와 강체·볼록껍질 콜라이더와 함께 붙인다. 선반 위에 놓으면 그대로 물리가 돈다
+- **진열 관행대로 채운다.** 통로마다 품목군(플래노그램), 같은 상품을 옆으로 이어 붙이고(페이싱), 앞뒤로 여러 개 세운다
+- **트윈과 시나리오가 같은 코드다.** seed 없이 돌리면 결정적 배치, seed 를 주면 상품 순서·빈 자리가 흔들린다
+- 인스턴싱으로 같은 상품 수천 개가 메시 하나를 공유한다. 9,864개를 올려도 렌더가 2~3분
+
 ### 매장 (대형마트 식품 매장 한 층의 일부)
 
 <p align="center">
@@ -116,12 +124,13 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 
 ## 검증
 
-생성할 때마다 자동으로 140항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
+생성할 때마다 자동으로 147항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
 
 | 검증기 | 항목 수 | 보는 것 |
 |---|---|---|
 | `tools/verify_shelf.py` | 58 | 외형 치수, 지주 위치·측면 개방, 단별 높이·두께·앞단 위치, 레일, 홀 피치 스냅, 콜라이더, 슬롯 내부 여부, 대표 상품(캔·크래커·병) 적합성 |
 | `tools/verify_store.py` | 82 | 바닥·천장·벽·기둥·조명, 진열대 대수·높이·바닥 접촉·벽 내부, 상호 겹침(137대 쌍 검사), 기둥 간섭, 앞면이 통로 경계에 있는지, **AMR 직진 여유폭 · 제자리 회전 · 통로 입구 회전 가능성** (통로 10개 × 입구 16곳) |
+| `tools/verify_stock.py` | 7 | 상품 9,864개 전부: 참조가 풀려 메시가 있는지, 강체·콜라이더·질량, 밑면이 선반에 닿는지(±2 mm), 자기 슬롯 안(폭·깊이·높이)인지, 같은 진열대 안 겹침, 메타데이터 중복 |
 
 통행 검사는 상수가 아니라 USD 안의 실제 형상으로 한다. 기둥·엔드캡·가격표 레일이 통로로 튀어나온 만큼을 전부 반영한 뒤, AMR 본체 + 안전 여유가 들어가는지 본다.
 
@@ -137,8 +146,10 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 | `tools/plan_store.py` | ✅ | USD → 평면도 PNG |
 | `tools/render_3d.py` | ✅ | USD → 3D PNG / 회전 GIF (matplotlib, 형상 확인용) |
 | `tools/render_isaac.py` | ✅ | USD → Isaac Sim RTX 렌더 (헤드리스) |
+| `tools/ycb_catalog.py` | ✅ | YCB 스캔 메시 → USD 에셋(텍스처·강체·질량) + 치수 카탈로그 84종 |
+| `scene/stock.py` | ✅ | 상품 배치: 플래노그램·페이싱·앞뒤 세우기, seed 시나리오, 인스턴싱 |
+| `tools/verify_stock.py` | ✅ | 상품 배치 검증 |
 | 실측 | ⬜ | `docs/SURVEY.md` 절차대로 통로 1~2개 |
-| `scene/stock.py` | ⬜ | YCB / GSO 를 슬롯에 채움 |
 | `scene/scenario.py` | ⬜ | seed 기반 시나리오 생성 |
 | 로봇 | ⬜ | AMR + 단일 팔, Isaac Sim 주행·검출·파지 |
 
@@ -154,6 +165,13 @@ python3 -m venv .venv && .venv/bin/pip install usd-core matplotlib   # matplotli
 .venv/bin/python -m tools.verify_store out/store.usda         # 82항목 검증
 .venv/bin/python -m tools.plan_store out/store.usda           # 평면도 → out/store_plan.png
 .venv/bin/python -m tools.render_3d  out/store.usda --gif out/store_3d.gif   # 3D 회전 GIF
+
+# 상품: YCB 스캔 메시 받기 (600 MB) → USD 에셋 + 카탈로그 → 슬롯에 채우기 → 검증
+aws s3 sync --no-sign-request --exclude "*" --include "*_google_16k.tgz" s3://ycb-benchmarks/data/google/ assets/ycb/raw/
+.venv/bin/python -m tools.ycb_catalog
+.venv/bin/python -m scene.stock --store out/store.usda --out out/store_stocked.usda   # 트윈 (결정적)
+.venv/bin/python -m scene.stock --seed 7 --fill 0.7 --out out/scenario_007.usda      # 시나리오
+.venv/bin/python -m tools.verify_stock out/store_stocked.usda
 ```
 
 Isaac Sim은 `out/store.usda`를 스테이지에 얹기만 하면 된다. 실제 렌더는 Isaac Sim 파이썬으로:
@@ -166,11 +184,10 @@ source ~/.isaac_cache_env   # OMNI_KIT_ACCEPT_EULA=YES 등
 ## 로드맵
 
 1. **실측** — 마트 한 곳에서 부통로 1~2개. 타일·상품을 자로 쓰는 절차는 `docs/SURVEY.md`
-2. **상품 선별** — YCB / GSO 에서 슬롯 치수(폭 13 cm, 높이 30 cm 내외)에 맞는 물체 고르기
-3. **`stock.py`** — 슬롯에 상품 배치, 실측 배치 재현 + seed 랜덤화
-4. **`scenario.py`** — 가림·기울어짐·조명 변화를 seed 하나로 재현
-5. **Isaac Sim** — AMR 주행 → 상품 검출 → 파지 → 회수
-6. **μ 스윕** — 선반·그리퍼 마찰계수는 실측 불가능한 값이라 하나로 고정하지 않고 스윕 축으로 둔다
+2. **상품 확장** — YCB 는 마트 상품이 32종뿐이라 통로가 단조롭다. Google Scanned Objects 로 넓힌다
+3. **`scenario.py`** — 가림·기울어짐·조명 변화를 seed 하나로 재현 (stock 의 seed 모드 위에)
+4. **Isaac Sim** — AMR 주행 → 상품 검출 → 파지 → 회수
+5. **μ 스윕** — 선반·그리퍼 마찰계수는 실측 불가능한 값이라 하나로 고정하지 않고 스윕 축으로 둔다
 
 ## 레포 구조
 
@@ -179,12 +196,17 @@ scene/
   constants.py    치수 단일 진실 공급원 — 여기서 시작한다
   shelf.py        진열대 생성기 + 슬롯 좌표
   store.py        매장 생성기 + 배치·통로 계산
+  stock.py        상품 배치 (플래노그램 · seed 시나리오)
 tools/
+  ycb_catalog.py  YCB 메시 → USD 에셋 + 카탈로그
+  verify_stock.py 상품 배치 검증
   verify_shelf.py 진열대 검증
   verify_store.py 매장 검증 + AMR 통행
   plan_store.py   평면도 렌더
   render_3d.py    3D PNG / GIF 렌더 (matplotlib)
   render_isaac.py Isaac Sim RTX 렌더
+assets/ycb/
+  catalog.json    상품 치수·질량·분류 (커밋). 메시·USD 는 받아서 만든다 (gitignore)
 docs/
   SURVEY.md       실측 안내 — 무엇을, 어떻게, 얼마나만 잴 것인가
   LOG.md          개발 기록 — 무엇을 왜 했는지, 날짜순

@@ -2,3 +2,6 @@
 out/
 __pycache__/
 *.pyc
+assets/ycb/raw/
+assets/ycb/models/
+assets/ycb/usd/
