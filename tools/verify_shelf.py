@@ -74,7 +74,8 @@ def main() -> int:
     )
     c.eq("metersPerUnit", UsdGeom.GetStageMetersPerUnit(stage), 1.0)
 
-    root = stage.GetPrimAtPath("/World/Shelf_00")
+    root_path = "/World/Shelf_00"
+    root = stage.GetPrimAtPath(root_path)
     c.true("루트 프림 존재", bool(root), str(root.GetPath()))
     if not root:
         return c.report() or 1
@@ -84,45 +85,88 @@ def main() -> int:
     # 전체 외형 ---------------------------------------------
     lo, hi = world_bbox(cache, root)
     c.eq("전체 폭 (Y)", hi[1] - lo[1], s.width, 1e-3)
-    c.eq("전체 깊이 (X)", hi[0] - lo[0], s.depth, 1e-3)
+    c.eq("전체 깊이 (X)", hi[0] - lo[0], s.depth + s.rail_t, 1e-3)
     c.eq("전체 높이 (Z)", hi[2] - lo[2], s.height, 1e-3)
     c.eq("바닥이 z=0 에 닿음", lo[2], 0.0, 1e-3)
-    c.eq("앞면이 x=0 에 있음", lo[0], 0.0, 1e-3)
+    c.eq("데크 앞면이 x=0 에 있음", lo[0] + s.rail_t, 0.0, 1e-3)
 
-    # 선반판 높이 -------------------------------------------
+    # 프레임: 지주는 뒤에, 측면은 열려 있어야 한다 ---------
+    back_x = s.depth - s.back_t
+    inner_half = s.inner_width() / 2
+    for tag in ("L", "R"):
+        p = stage.GetPrimAtPath(f"{root_path}/Frame/Post_{tag}")
+        if not p:
+            c.true(f"Post_{tag} 존재", False)
+            continue
+        plo, phi = world_bbox(cache, p)
+        c.eq(f"Post_{tag} 가 백판 바로 앞에 붙음", phi[0], back_x, 1e-3)
+        c.eq(f"Post_{tag} 단면 깊이", phi[0] - plo[0], s.post_d, 1e-3)
+        c.eq(f"Post_{tag} 높이", phi[2] - plo[2], s.height, 1e-3)
+
+    cubes = [p for p in Usd.PrimRange(root) if p.IsA(UsdGeom.Cube)]
+    intruders = []
+    for p in cubes:
+        if p.GetName().startswith("Post_"):
+            continue
+        plo, phi = world_bbox(cache, p)
+        if plo[1] < -inner_half - TOL or phi[1] > inner_half + TOL:
+            intruders.append(p.GetName())
+    c.true(
+        "지주 외에는 지주 사이 폭 안에 있음 (측면 개방)",
+        not intruders,
+        f"벗어난 형상 {intruders}" if intruders else f"지주 사이 폭 {s.inner_width():.3f}",
+    )
+
+    kick = stage.GetPrimAtPath(f"{root_path}/Frame/Kick")
+    if kick:
+        klo, khi = world_bbox(cache, kick)
+        c.eq("걸레받이 앞면이 데크보다 들어감", klo[0], s.kick_setback, 1e-3)
+        c.eq("걸레받이 윗면이 데크 밑면에 닿음", khi[2], s.bottom_z - s.deck_t, 1e-3)
+    else:
+        c.true("걸레받이 존재", False)
+
+    # 단 -----------------------------------------------------
     want_z = s.level_heights()
+    fronts = s.level_fronts()
+    thick = s.level_thickness()
+    c.true(
+        "단 높이가 홀 피치 배수",
+        all(abs(z / s.hole_pitch - round(z / s.hole_pitch)) < 1e-6 for z in want_z),
+        f"피치 {s.hole_pitch * 1000:.0f} mm",
+    )
     for i, wz in enumerate(want_z):
-        p = stage.GetPrimAtPath(f"/World/Shelf_00/Level_{i:02d}")
+        p = stage.GetPrimAtPath(f"{root_path}/Level_{i:02d}")
         if not p:
             c.true(f"Level_{i:02d} 존재", False)
             continue
         lo_i, hi_i = world_bbox(cache, p)
         c.eq(f"Level_{i:02d} 윗면 z", hi_i[2], wz, 1e-3)
-        c.eq(f"Level_{i:02d} 두께", hi_i[2] - lo_i[2], s.board_t, 1e-3)
+        c.eq(f"Level_{i:02d} 두께", hi_i[2] - lo_i[2], thick[i], 1e-3)
+        c.eq(f"Level_{i:02d} 앞단 x", lo_i[0], fronts[i], 1e-3)
+        c.eq(f"Level_{i:02d} 뒷단이 백판에 닿음", hi_i[0], back_x, 1e-3)
 
-    # 선반판이 측판 안쪽에 있는가 ---------------------------
-    inner_half = s.width / 2 - s.side_t
-    p0 = stage.GetPrimAtPath("/World/Shelf_00/Level_00")
-    lo0, hi0 = world_bbox(cache, p0)
+        r = stage.GetPrimAtPath(f"{root_path}/Rail_{i:02d}")
+        if not r:
+            c.true(f"Rail_{i:02d} 존재", False)
+            continue
+        rlo, rhi = world_bbox(cache, r)
+        c.eq(f"Rail_{i:02d} 윗면이 선반 윗면과 같음", rhi[2], wz, 1e-3)
+        c.eq(f"Rail_{i:02d} 가 앞단에 걸림", rhi[0], fronts[i], 1e-3)
+
     c.true(
-        "선반판이 측판을 파고들지 않음",
-        lo0[1] >= -inner_half - TOL and hi0[1] <= inner_half + TOL,
-        f"y ∈ [{lo0[1]:.3f}, {hi0[1]:.3f}], 허용 ±{inner_half:.3f}",
+        "상단 선반이 데크보다 얕음",
+        all(f > 0 for f in fronts[1:]),
+        f"상단 앞면 x = {fronts[1]:.2f} (데크 0.00)",
     )
 
     # 콜라이더 ----------------------------------------------
-    geoms = [
-        p
-        for p in Usd.PrimRange(root)
-        if p.IsA(UsdGeom.Cube)
-    ]
-    n_col = sum(1 for p in geoms if p.HasAPI(UsdPhysics.CollisionAPI))
+    n_col = sum(1 for p in cubes if p.HasAPI(UsdPhysics.CollisionAPI))
     c.true(
         "모든 형상에 CollisionAPI",
-        n_col == len(geoms) and len(geoms) > 0,
-        f"{n_col}/{len(geoms)}",
+        n_col == len(cubes) and len(cubes) > 0,
+        f"{n_col}/{len(cubes)}",
     )
-    c.eq("형상 개수 (측판2+뒷판1+선반N)", len(geoms), 3 + s.n_levels)
+    c.eq("형상 개수 (지주2+백판+걸레받이+단N+레일N)", len(cubes), 4 + 2 * s.n_levels)
 
     # 슬롯이 선반 내부에 들어오는가 -------------------------
     slots = slot_positions(s)
@@ -133,7 +177,9 @@ def main() -> int:
         half_w = sl["max_w"] / 2 + s.slot_margin_y
         if abs(sl["y"]) + half_w > inner_half + TOL:
             bad.append(sl)
-        if sl["x_front"] + sl["max_d"] > s.depth - s.back_t + TOL:
+        if sl["x_front"] < fronts[sl["level"]] - TOL:
+            bad.append(sl)
+        if sl["x_front"] + sl["max_d"] > back_x + TOL:
             bad.append(sl)
         if sl["z"] + sl["max_h"] > s.height + TOL:
             bad.append(sl)

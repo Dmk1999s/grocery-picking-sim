@@ -6,13 +6,17 @@
 값의 출처를 [ ] 로 표시한다:
   [실측]  실제 마트에서 잰 값        ← 디지털 트윈의 근거
   [잠정]  아직 안 잰 값. 실측 후 교체 ← docs/SURVEY.md 참고
-  [표준]  규격·문헌에서 온 값
+  [표준]  규격·문헌·시판 카탈로그에서 온 값
   [설계]  우리가 정한 값
+
+잠정값은 국내 마트용 곤돌라 진열대 카탈로그(W1200 × D500 × H1800 급)와
+대형마트 매장 설계 관행에서 가져왔다. 브랜드·지점마다 다르므로 실측 전에는
+"실제 마트와 같은 구조, 대표적인 치수"로 읽어야 한다.
 
 단위는 전부 미터(m), 킬로그램(kg). USD 스테이지도 metersPerUnit=1.0 이다.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 
 # ─────────────────────────────────────────────────────────────
 # 좌표계 규약
@@ -20,67 +24,118 @@ from dataclasses import dataclass, field
 # 월드: Z-up (Isaac Sim 기본).
 #
 # 선반 로컬 프레임 (ShelfSpec 이 만드는 Xform 기준):
-#   원점 = 선반 바닥면의 통로쪽 앞면 중앙
+#   원점 = 바닥 데크의 통로쪽 앞면 중앙, 바닥 높이
 #   +X = 선반 안쪽(깊이 방향)      ← 로봇 팔이 진입하는 방향
 #   +Y = 선반 폭 방향(정면에서 봤을 때 오른쪽)
 #   +Z = 위
 #
 # 논문(arXiv:2409.15465) Fig.2a 의 item frame 과 축 방향을 맞췄다.
 # 파지 계획을 yz 평면에 투영한다는 것은 곧 "통로에서 정면으로 본 실루엣"이다.
+#
+# 매장 프레임 (store.py):
+#   원점 = 매장 바닥 모서리 (실측할 때 벽 모서리에서 재는 것과 같다)
+#   +X = 통로를 가로지르는 방향 (진열대 열이 X 방향으로 번갈아 선다)
+#   +Y = 통로를 따라가는 방향 (진열대 열의 길이 방향)
 
 UP_AXIS = "Z"
 METERS_PER_UNIT = 1.0
 
 
 # ─────────────────────────────────────────────────────────────
-# 선반 (진열대)
+# 진열대 (곤돌라 한 면)
 # ─────────────────────────────────────────────────────────────
+# 실제 곤돌라 구조:
+#
+#        ┌─백판─┐
+#   지주 │      │ 지주        ← 측면은 뚫려 있다. 통판 측판은 열 끝(엔드
+#        ├──────┤  상단 선반     사이드)에만 붙고, 그것도 얇은 장식판이다.
+#        ├──────┤  (얕다, 뒤 지주에 브래킷으로 걸림)
+#        ├──────┤
+#     ┌──┴──────┤  바닥 데크 (깊다)
+#     │  걸레받이 │  ← 앞면이 데크보다 안으로 들어가 있어 발이 들어간다
+#   ──┴─────────┴──
+#
+# 팔이 측면에서 들어갈 수 있고, 카메라가 옆 진열대 너머를 볼 수 있다는 점이
+# 상자 모델과 다르다. 바닥 데크가 상단보다 깊다는 것은 위 단의 상품이
+# 통로에서 10 cm 안쪽에 있다는 뜻이라, 팔 도달 거리 계산에 바로 들어간다.
 @dataclass(frozen=True)
 class ShelfSpec:
-    """진열대 한 대(gondola 한 면)의 치수."""
+    """곤돌라 한 면(단면 진열대 한 대)의 치수."""
 
     # 외형 ---------------------------------------------------
-    width: float = 1.20          # [잠정] 폭 (Y)
-    depth: float = 0.45          # [잠정] 깊이 (X)
-    height: float = 1.80         # [잠정] 전체 높이 (Z)
+    width: float = 1.20          # [잠정] 폭 (Y). 마트 표준 1200, 편의점 900
+    depth: float = 0.50          # [잠정] 바닥 데크 깊이 (X) = 한 면의 바닥 점유
+    height: float = 1.80         # [잠정] 지주 높이 (Z). 1500/1800/2100 중 1800
 
-    # 판재 두께 ----------------------------------------------
-    board_t: float = 0.02        # [설계] 선반판 두께
-    side_t: float = 0.03         # [설계] 측판 두께
-    back_t: float = 0.02         # [설계] 뒷판 두께
+    # 상단 선반 ----------------------------------------------
+    shelf_depth: float = 0.40    # [잠정] 상단 선반 깊이. 바닥 데크보다 얕다
+    board_t: float = 0.02        # [표준] 강판 선반 두께 (접힌 테두리 포함)
+
+    # 바닥 데크 ----------------------------------------------
+    deck_t: float = 0.03         # [표준] 바닥 데크 두께
+    kick_setback: float = 0.04   # [표준] 걸레받이가 데크 앞면에서 들어간 거리
+
+    # 지주 · 백판 ---------------------------------------------
+    post_w: float = 0.03         # [표준] 지주 단면 폭 (Y)
+    post_d: float = 0.05         # [표준] 지주 단면 깊이 (X)
+    back_t: float = 0.02         # [표준] 백판 두께 (타공판)
+    hole_pitch: float = 0.025    # [표준] 지주 브래킷 홀 피치. 선반 높이는 이 배수
+
+    # 가격표 레일 --------------------------------------------
+    # 선반 앞단에 걸리는 띠. 상품을 앞으로 끌어낼 때 걸리는 턱이 이것이다.
+    rail_h: float = 0.04         # [표준] 레일 높이 (선반 윗면에서 아래로)
+    rail_t: float = 0.01         # [표준] 레일 두께 (앞으로 튀어나옴)
 
     # 선반 단 ------------------------------------------------
-    # 최하단 높이부터 등간격으로 n_levels 장. 실측하면 개별 높이로 바꾼다.
-    n_levels: int = 5            # [잠정] 단 수
-    bottom_z: float = 0.15       # [잠정] 최하단 선반판 윗면 높이
-    top_z: float = 1.60          # [잠정] 최상단 선반판 윗면 높이
+    # Level_00 = 바닥 데크. 그 위로 상단 선반이 top_z 까지 등간격으로
+    # 올라가고, 각 높이는 hole_pitch 배수로 스냅된다. 실측하면 개별 높이로
+    # 바꾼다 (level_heights 를 리스트 반환으로).
+    n_levels: int = 5            # [잠정] 단 수 (바닥 데크 포함)
+    bottom_z: float = 0.15       # [잠정] 바닥 데크 윗면 높이
+    top_z: float = 1.50          # [잠정] 최상단 선반 윗면 높이 (손이 닿는 한계)
 
     # 상품 배치용 슬롯 ---------------------------------------
     slots_per_level: int = 6     # [설계] 한 단을 몇 칸으로 나눌지
     slot_margin_y: float = 0.03  # [설계] 슬롯 좌우 여유
-    slot_front_gap: float = 0.05 # [설계] 상품 앞면과 선반 앞단 사이 거리
+    slot_front_gap: float = 0.03 # [설계] 상품 앞면과 선반 앞단 사이 거리
+
+    # 파생값 -------------------------------------------------
+    def inner_width(self) -> float:
+        """지주 사이 폭. 선반판·백판·데크가 이 폭이다."""
+        return self.width - 2 * self.post_w
+
+    def snap(self, z: float) -> float:
+        """높이를 지주 홀 피치 배수로 맞춘다."""
+        return round(z / self.hole_pitch) * self.hole_pitch
 
     def level_heights(self) -> list[float]:
-        """각 선반판 윗면의 z. 상품은 이 높이 위에 놓인다."""
+        """각 단 윗면의 z. 상품은 이 높이 위에 놓인다. [0] 은 바닥 데크."""
         if self.n_levels == 1:
             return [self.bottom_z]
         step = (self.top_z - self.bottom_z) / (self.n_levels - 1)
-        return [self.bottom_z + step * i for i in range(self.n_levels)]
+        return [self.snap(self.bottom_z + step * i) for i in range(self.n_levels)]
+
+    def level_fronts(self) -> list[float]:
+        """각 단 앞단의 x (선반 로컬). 바닥 데크는 0, 상단 선반은 안으로 들어간다."""
+        upper = self.depth - self.back_t - self.shelf_depth
+        return [0.0] + [upper] * (self.n_levels - 1)
+
+    def level_thickness(self) -> list[float]:
+        return [self.deck_t] + [self.board_t] * (self.n_levels - 1)
 
     def level_clearances(self) -> list[float]:
         """단마다의 수직 여유. 상품 높이 상한이자 팔 진입 가능 높이.
 
         **단마다 다르다.** 중간 단은 위 선반판까지가 한계지만, 최상단은
-        위에 판이 없어서 선반 전체 높이가 한계다. 이걸 하나의 값으로
-        쓰면 최상단에 들어가지 않는 상품을 배치하게 된다.
-
-        실제 진열대가 최상단이 뚫려 있어서 키 큰 상품을 세울 수 있다면
-        `height` 를 그만큼 올려 잡는다 — 여기서 예외 처리하지 말 것.
+        위에 판이 없어서 지주 높이가 한계다. 실제 진열대는 최상단이 뚫려
+        있어 지주보다 큰 상품도 세울 수 있지만, 그러면 조명·천장·팔 도달
+        문제가 되므로 보수적으로 지주 높이를 상한으로 둔다.
         """
         hs = self.level_heights()
+        ts = self.level_thickness()
         out: list[float] = []
         for i, z in enumerate(hs):
-            top = hs[i + 1] - self.board_t if i + 1 < len(hs) else self.height
+            top = hs[i + 1] - ts[i + 1] if i + 1 < len(hs) else self.height
             out.append(top - z)
         return out
 
@@ -90,26 +145,104 @@ class ShelfSpec:
 
     def slot_width(self) -> float:
         """슬롯 하나의 폭. 상품 폭 상한."""
-        inner_w = self.width - 2 * self.side_t
-        return inner_w / self.slots_per_level - 2 * self.slot_margin_y
+        return self.inner_width() / self.slots_per_level - 2 * self.slot_margin_y
 
 
 # ─────────────────────────────────────────────────────────────
 # 매장 레이아웃
 # ─────────────────────────────────────────────────────────────
+# 실제 대형마트의 한 구역을 자른 모양:
+#
+#   y ↑
+#     ┌────────────────────────────────────────────┐ ← 벽
+#     │              뒤 주통로 (넓음)                 │
+#     │   ┌──┐          ┌────┐          ┌──┐        │
+#     │   │벽│  부통로 0  │엔드캡│  부통로 1  │벽│        │
+#     │   │면│          ├────┤          │면│        │
+#     │   │진│          │양면 │          │진│        │
+#     │   │열│          │곤돌라│          │열│        │
+#     │   │대│          ├────┤          │대│        │
+#     │   │  │          │엔드캡│          │  │        │
+#     │   └──┘          └────┘          └──┘        │
+#     │              앞 주통로 (넓음)   ▣ 기둥          │
+#     └────────────────────────────────────────────┘ → x
+#
+# - 부통로: 진열대 사이. 손님 두 명이 카트 끌고 비켜 갈 폭.
+# - 주통로: 부통로 양 끝을 잇는 넓은 통로. AMR 이 회전하는 곳.
+# - 양면 곤돌라: 등을 맞댄 두 면. 부통로 사이에 선다.
+# - 엔드캡: 곤돌라 열 양 끝, 주통로를 보는 단면 진열대. 행사 상품 자리.
+# - 벽면 진열대: 벽에 붙은 단면 진열대. 곤돌라보다 높다.
+# - 기둥: 건물 구조. 진열대 열 안에 묻히거나 통로에 튀어나온다.
 @dataclass(frozen=True)
 class StoreSpec:
-    """매장 한 구역. 우선은 통로 1~2 개만 만든다."""
+    """매장 한 구역. 부통로 1~2 개만 만든다 (docs/SURVEY.md)."""
 
-    aisle_width: float = 1.80    # [잠정] 통로 폭 ← AMR 통과 검증의 핵심 값
-    n_aisles: int = 1            # [설계] 통로 수
-    shelves_per_run: int = 4     # [설계] 한 줄에 놓을 진열대 수
-    ceiling_h: float = 3.20      # [잠정] 천장 높이
-    wall_margin: float = 1.50    # [설계] 진열대 열 끝과 벽 사이 여유
+    # 통로 ---------------------------------------------------
+    aisle_width: float = 1.80    # [잠정] 부통로 폭 ← AMR 통과 검증의 핵심 값
+    main_aisle_width: float = 2.70  # [잠정] 주통로 폭 (대형마트 2.4~3.0)
+    n_aisles: int = 2            # [설계] 부통로 수. 2 여야 양면 곤돌라·엔드캡이 생긴다
+    shelves_per_run: int = 4     # [잠정] 곤돌라 한 열의 진열대 수
 
+    # 건물 ---------------------------------------------------
+    ceiling_h: float = 3.20      # [잠정] 천장 높이 (소형 마트 3.0~3.5, 대형은 더 높음)
+    wall_t: float = 0.10         # [설계] 벽 두께 (바닥 사각형 바깥에 붙는다)
+    tile: float = 0.60           # [잠정] 바닥 타일 규격 — 실측 환산의 자(尺)
+    column_size: float = 0.60    # [잠정] 기둥 한 변 (정사각 단면)
+    # 기둥 중심 (x, y). 실측 전에는 검증 경로가 살아있는지 보려고 하나만 둔다.
+    # 왼쪽 벽에 붙어 앞 주통로로 튀어나온 위치 — 벽면 진열대 선(깊이 0.5)보다
+    # 10 cm 더 나와서 부통로 0 입구에 걸친다. 실측하면 이 튜플을 통째로 바꾼다.
+    columns: tuple[tuple[float, float], ...] = ((0.30, 1.35),)   # [잠정]
+
+    # 조명 ---------------------------------------------------
+    # 통로마다 천장에 라인 조명 하나. 시나리오 생성기가 세기를 흔든다.
+    light_w: float = 0.30        # [설계] 라인 조명 폭
+    light_intensity: float = 3000.0  # [설계] UsdLux RectLight intensity
+    light_temp_k: float = 4000.0     # [설계] 색온도 (마트 백색 LED 4000~5000K)
+
+    # 벽면 진열대 · 엔드캡 -----------------------------------
+    wall_unit_height: float = 2.10   # [잠정] 벽면 진열대 지주 높이
+    wall_unit_top_z: float = 1.80    # [잠정] 벽면 진열대 최상단 선반 높이
+    wall_unit_levels: int = 6        # [잠정]
+
+    # 파생값 -------------------------------------------------
     def run_length(self, shelf: ShelfSpec) -> float:
-        """진열대 한 줄의 전체 길이 (Y 방향)."""
+        """곤돌라 한 열의 길이 (Y), 엔드캡 제외."""
         return shelf.width * self.shelves_per_run
+
+    def endcap_spec(self, shelf: ShelfSpec) -> ShelfSpec:
+        """엔드캡은 양면 곤돌라 폭(= 깊이 × 2)에 맞춘 단면 진열대."""
+        return replace(shelf, width=2 * shelf.depth, slots_per_level=5)
+
+    def wall_unit_spec(self, shelf: ShelfSpec) -> ShelfSpec:
+        return replace(
+            shelf,
+            height=self.wall_unit_height,
+            top_z=self.wall_unit_top_z,
+            n_levels=self.wall_unit_levels,
+        )
+
+    def footprint(self, shelf: ShelfSpec) -> tuple[float, float]:
+        """바닥 사각형 크기 (Lx, Ly). 벽은 이 바깥에 붙는다."""
+        lx = self.n_aisles * (self.aisle_width + 2 * shelf.depth)
+        endcap_d = self.endcap_spec(shelf).depth
+        ly = 2 * self.main_aisle_width + 2 * endcap_d + self.run_length(shelf)
+        return lx, ly
+
+    def aisle_x_range(self, aisle: int, shelf: ShelfSpec) -> tuple[float, float]:
+        """부통로 `aisle` 의 x 구간 (양쪽 진열대 앞면 사이)."""
+        pitch = self.aisle_width + 2 * shelf.depth
+        x0 = aisle * pitch + shelf.depth
+        return x0, x0 + self.aisle_width
+
+    def run_y_range(self, shelf: ShelfSpec) -> tuple[float, float]:
+        """곤돌라 열(엔드캡 제외)이 차지하는 y 구간."""
+        y0 = self.main_aisle_width + self.endcap_spec(shelf).depth
+        return y0, y0 + self.run_length(shelf)
+
+    def main_aisle_y_ranges(self, shelf: ShelfSpec) -> list[tuple[float, float]]:
+        """앞·뒤 주통로의 y 구간."""
+        _, ly = self.footprint(shelf)
+        return [(0.0, self.main_aisle_width), (ly - self.main_aisle_width, ly)]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -125,9 +258,19 @@ class RobotSpec:
     arm_mount_dy: float = 0.18   # [설계] 중심선에서 좌우 팔 마운트까지
     n_arms_built: int = 1        # [설계] 지금 실제로 붙이는 팔 수
 
+    safety_margin: float = 0.15  # [설계] 장애물과 유지할 편측 여유 (내비게이션 inflation)
+
     def turn_radius(self) -> float:
         """제자리 회전 시 필요한 반경 (차동구동 가정)."""
         return ((self.base_w / 2) ** 2 + (self.base_l / 2) ** 2) ** 0.5
+
+    def corridor_width(self) -> float:
+        """직진 통과에 필요한 최소 통로 폭 (여유 포함)."""
+        return self.base_w + 2 * self.safety_margin
+
+    def turn_diameter(self) -> float:
+        """제자리 회전에 필요한 최소 사각 구간 한 변 (여유 포함)."""
+        return 2 * self.turn_radius() + 2 * self.safety_margin
 
 
 # ─────────────────────────────────────────────────────────────
