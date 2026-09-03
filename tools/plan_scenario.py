@@ -2,6 +2,7 @@
 
     python -m tools.plan_scenario out/scenario_007.json --out out/scenario_007_plan.png
     python -m tools.plan_scenario out/scenario_007.json --order 2      # 한 주문만
+    python -m tools.plan_scenario out/scenario_007.json --order 2 --drive out/drive/drive_007_ORD_02.json   # + 실제 궤적
 
 바탕은 plan_store 와 같은 USD 기반 평면도다. 그 위에
   경로       주문마다 색. 도크(★) → 경유점 → 정차(●, 번호 = 주문 안 방문 순서) → 도크
@@ -32,6 +33,7 @@ def main() -> None:
     ap.add_argument("json", nargs="?", default="out/scenario_007.json")
     ap.add_argument("--out", default=None, help="기본 <json 이름>_plan.png")
     ap.add_argument("--order", type=int, default=None, help="이 주문만 그린다 (0부터)")
+    ap.add_argument("--drive", default=None, help="drive_isaac 결과 JSON. 실제 주행 궤적을 검정 선으로 겹친다")
     args = ap.parse_args()
 
     sc = json.loads(Path(args.json).read_text())
@@ -77,6 +79,13 @@ def main() -> None:
             ax.plot([w["x"], cx], [w["y"], cy], color=col, lw=0.8, zorder=10)
             ax.plot(cx, cy, "o", ms=3, color=col, mec="k", mew=0.4, zorder=11)
             ax.text(w["x"], w["y"], str(n), ha="center", va="center", fontsize=6, color="w", weight="bold", zorder=12)
+    if args.drive:
+        dr = json.loads(Path(args.drive).read_text())
+        tr = dr["trace"]
+        ax.plot([t[1] for t in tr], [t[2] for t in tr], color="k", lw=0.9, ls=(0, (2, 1.2)), zorder=11,
+                label=f"실제 주행 {dr['order']}  {dr['driven_length_m']:.0f} m / {dr['sim_time_s']:.0f} s  최소 간격 {dr['min_clearance_m'] * 100:.0f} cm")
+        for pk in dr["picks"]:
+            ax.plot(pk["actual"][0], pk["actual"][1], "k+", ms=7, mew=1.2, zorder=13)
     d = sc["dock"]
     ax.plot(d["x"], d["y"], marker="*", ms=12, color="#222", zorder=12, label="도크")
 

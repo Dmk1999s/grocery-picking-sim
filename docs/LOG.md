@@ -5,6 +5,38 @@
 
 ---
 
+## 2026-09-03 (6) — Isaac Sim 에서 AMR 주행
+
+**한 일**
+- `tools/drive_isaac.py` — 시나리오 JSON 의 경유점을 Isaac Sim 안에서 Carter v1 로 실제 주행. 실험적 API(`isaacsim.core.experimental` Articulation, `WheeledRobot`, `DifferentialController`). 정차마다 위치·yaw 오차, 10 Hz 로 본체↔장애물 간격·충돌, 이동 거리·시간을 JSON 으로. `--record` 면 체이스 카메라(로봇 뒤 2.6 m, 높이 1.9 m 를 따라감)와 에셋 1인칭 카메라 프레임 + 정차 순간 PNG + GIF
+- `tools/verify_drive.py` — 10항목. `tools/frames_to_gif.py` — 프레임 → GIF (폭·프레임 수 조절)
+- `tools/plan_scenario.py --drive` — 계획 위에 실제 궤적·정차점 오버레이
+- `RobotSpec` 을 Carter v1 실측(에셋 AABB 0.67 × 0.63, 바퀴 r 0.24, 축간 0.53, 조인트 `left_wheel`/`right_wheel`, 원점이 축 높이라 spawn z 0.255)으로 갱신. 시나리오 재생성 (정차 x 가 1.5 cm 이동), 82 + 17 통과
+- seed 7 ORD_02: 62.7 m 계획 → 64.7 m 주행, 183 s 시뮬 / 161 s 벽시계(렌더 포함, GPU 는 humanoid 학습과 공유 중), 정차 오차 최대 3.7 cm / 2.0°, 최소 간격 6.7 cm, 충돌 0, 도크 복귀 2.7 cm. verify_drive 10 통과
+
+**결정과 이유**
+- **Carter v1.** 후보 셋을 Isaac 에서 열어 봤다: Nova Carter 는 센서 12개 달려 19 s 로딩·무겁고 AABB 가 0.9 m 폭으로 잡힘, Jetbot 은 0.2 m 짜리. Carter v1 은 5 s 로딩, 0.67 × 0.63 m 로 RobotSpec(0.70 × 0.60)과 거의 같고 1·3인칭 카메라가 붙어 있다
+- **바퀴 부호는 굴려 보고 정한다.** 에셋마다 조인트 축 방향이 달라 +속도가 후진일 수 있다. 문서를 믿는 대신 0.75 s 굴려 heading 방향 변위 부호를 본다 (Carter v1 은 +)
+- **물리는 `SimulationManager.step`, 렌더는 `app.update`** 로 분리. 매 스텝 렌더하면 60 Hz × RTX 라 느리다. 18 스텝마다 한 프레임(3.3 fps)만 렌더하고 GIF 는 10 fps 로 돌려 3배속… 120 프레임으로 줄여 실제로는 15배속. GIF 는 사진 같은 프레임이라 압축이 안 돼 640 px 610 프레임이 58 MB → 400 px 120 프레임 5.4 MB
+- **정차 순서: 회전 → (밀렸으면 다가가기 → 다시 회전).** 처음엔 `for 2회: 회전; 확인; 직진` 으로 짜서 마지막 동작이 직진으로 끝나 yaw 가 최대 40° 틀어진 채 정차했다. verify_drive 가 잡았다. 마지막은 항상 회전
+- **제자리 회전 중 캐스터가 본체를 3~5 cm 민다.** Carter v1 은 뒤 캐스터라 회전 중심이 바퀴 축이고 원점도 거기지만, 캐스터가 끌리며 미끄러진다. 위치 허용 3 cm 를 넘으면 한 번 다가간다
+- **최소 간격 6.7 cm 는 기하학.** standoff 0.20 인데 사각형(0.67 × 0.63)이 제자리에서 돌면 모서리 반경 0.46 이 반폭 0.315 보다 0.145 크다. 0.20 − 0.145 = 0.055 + 정차 오차. 진열대에서 더 떨어지면 팔 도달이 줄고, 옆으로 진입하면 차동구동이 안 된다. 지금은 기록만 하고, 팔을 붙일 때 standoff 와 같이 본다
+- **간격 계산은 검증기와 같은 소스(USD AABB)**, 본체는 둘레 표본점 24개. PhysX 접촉 리포트 대신 형상으로 보는 이유는 verify_store·verify_scenario 와 같은 기준으로 비교하기 위해서
+
+**Isaac 에서 배운 것**
+- `Articulation.set_velocities` 는 선속도·각속도를 따로 받는다 (`linear_velocities=`, `angular_velocities=`). (1, 6) 을 넘기면 broadcast 에러
+- 실험적 API 는 `warp` 배열을 돌려준다 → `.numpy()`. 쿼터니언은 wxyz
+- 바퀴 드라이브는 강성 0 으로 두고 감쇠만 (에셋 값이 작으면 1e4)
+- 편집 스크립트에서 `s.index(A):s.index(B)` 슬라이스로 블록을 바꿀 때 B 가 A 보다 앞에 먼저 나오면 빈 문자열이 되고, `str.replace("", new)` 는 글자 사이마다 끼워 넣어 파일을 망친다. 커밋 전이었어서 다시 썼다 — 블록 치환은 `assert old in s` 로 확인하고 할 것
+
+**남은 것**
+- 로컬라이제이션 (지금은 참값). 라이다/오도메트리 → AMCL 급
+- 팔: 정차 자세에서 `item_center` 로 뻗기. 마운트 높이는 도달 통계로 정한다 (지금 0.35 m 면 3단 이상 미도달)
+- 다른 주문·seed 로 반복해 정차 오차 분포 만들기 (지금은 한 주문)
+- 주행 속도: 0.8 m/s 상한인데 평균 0.35 m/s. 경유점마다 정지-회전 하기 때문. 부드러운 추종(pure pursuit)으로 바꾸면 빨라진다
+
+---
+
 ## 2026-09-03 (5) — 시나리오 생성기: 매장 상태 + 피킹 주문 + 정차·경로
 
 **한 일**

@@ -282,11 +282,24 @@ class StoreSpec:
 # ─────────────────────────────────────────────────────────────
 # 로봇 (통과 가능성 검증용 — 형상은 나중에)
 # ─────────────────────────────────────────────────────────────
+# AMR 은 Isaac Sim 기본 에셋 Carter v1 을 쓴다 (차동구동 + 뒤 캐스터, 1·3인칭 카메라 내장).
+# 본체 치수는 에셋 AABB 를 Isaac 에서 읽은 값. 팔은 아직 없다 — 마운트 높이만 잡아 둔다.
 @dataclass(frozen=True)
 class RobotSpec:
-    base_w: float = 0.60         # [설계] AMR 폭
-    base_l: float = 0.70         # [설계] AMR 길이
-    base_h: float = 0.35         # [설계] AMR 높이 (팔 마운트 바닥)
+    base_w: float = 0.63         # [표준] Carter v1 에셋 AABB 폭 (바퀴 포함)
+    base_l: float = 0.67         # [표준] Carter v1 에셋 AABB 길이
+    base_h: float = 0.35         # [설계] 팔 마운트 바닥 높이
+
+    # Isaac 에셋 -------------------------------------------------
+    asset: str = "/Isaac/Robots/NVIDIA/Carter/carter_v1.usd"   # [표준] get_assets_root_path() 뒤에 붙인다
+    wheel_joints: tuple[str, str] = ("left_wheel", "right_wheel")  # [표준] 에셋 조인트 이름
+    wheel_radius: float = 0.24   # [표준] 에셋 바퀴 AABB 0.482 / 2
+    wheel_base: float = 0.53     # [표준] 좌우 바퀴 중심 간격 (에셋 y ±0.266)
+    spawn_z: float = 0.255       # [표준] 에셋 원점이 바퀴 축 높이라 바닥에서 이만큼 띄워 놓는다 (AABB 밑 −0.251)
+
+    # 주행 제한 ---------------------------------------------------
+    v_max: float = 0.8           # [설계] 직진 최고 속도 m/s (매장 안 보행자 옆)
+    w_max: float = 1.0           # [설계] 회전 최고 각속도 rad/s
 
     # 양팔 설계 / 한 팔 구현 — 마운트 자리는 처음부터 둘 다 잡아둔다.
     arm_mount_dy: float = 0.18   # [설계] 중심선에서 좌우 팔 마운트까지

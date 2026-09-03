@@ -11,6 +11,12 @@
 </p>
 
 <p align="center">
+  <img src="docs/img/drive_chase.gif" width="480" alt="Carter v1 이 시나리오 주문 경로를 주행">
+  <br>
+  <sub>Isaac Sim 물리 시뮬. AMR(Carter v1)이 seed 7 주문 2번의 경로 63 m 를 따라 4곳에 정차하고 도크로 돌아온다 (15배속). 정차 오차 최대 3.7 cm / 2.0°, 충돌 0</sub>
+</p>
+
+<p align="center">
   <img src="docs/img/isaac_stocked_aisle.png" width="352" alt="부통로 안 눈높이">
   <img src="docs/img/isaac_stocked_shelf_face.png" width="352" alt="곤돌라 정면 — 팔 카메라 시야">
   <br>
@@ -141,9 +147,34 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 
 **팔 도달이 설계를 돌려 말한다.** 마운트 0.35 m · 도달 0.85 m (UR5e 급) 이면 맨 앞 상품 3,100개 중 도달 가능한 것이 1,774개 (57 %) 다. 3단(1.16 m) 이상은 전부 못 닿는다. 주문은 도달 가능한 상품에서만 뽑되 이 수치를 통계로 남긴다 — 팔을 높이 올리거나(리프트) 더 긴 팔을 쓰라는 근거가 된다.
 
+### 주행 (Isaac Sim 물리 시뮬레이션)
+
+<p align="center">
+  <img src="docs/img/drive_plan.png" width="440" alt="계획 경로 vs 실제 궤적">
+  <img src="docs/img/drive_pick_chase.png" width="300" alt="정차 순간, 체이스 카메라">
+  <br>
+  <sub>왼쪽: 계획(초록)과 물리 시뮬 궤적(검정 점선). + 는 실제 정차점. 첫 정차 앞의 작은 고리는 제자리 회전 뒤 3 cm 이상 밀렸을 때 한 번 더 다가간 흔적. 오른쪽: 정차 순간. 왼쪽(팔 마운트)이 진열대를 본다</sub>
+</p>
+
+`tools/drive_isaac.py` 가 시나리오 JSON 의 경유점을 Isaac Sim 안에서 **Carter v1** (Isaac 기본 에셋, 차동구동 + 뒤 캐스터) 으로 실제로 주행한다. 계획은 계획이고, 여기서 나오는 건 물리 결과다.
+
+| | seed 7 · ORD_02 |
+|---|---|
+| 계획 / 주행 거리 | 62.7 m / 64.7 m |
+| 시뮬 시간 / 벽시계 | 183 s / 161 s (렌더 포함) |
+| 정차 4곳 위치·yaw 오차 | 최대 3.7 cm · 2.0° |
+| 본체 ↔ 장애물 최소 간격 | 6.7 cm (정차 앞 제자리 회전 때 모서리가 진열대 쪽으로 쓸린다) |
+| 충돌 프레임 / 도크 복귀 오차 | 0 / 2.7 cm |
+
+- **제어는 단순 유니사이클 추종기**: 경유점을 향해 제자리 회전 → 직진(도착 근처 감속) → 정차점에서는 지정 yaw 로 회전. 위치는 시뮬 참값 — 로컬라이제이션은 아직 없다
+- **바퀴 부호를 스스로 잡는다.** 시작할 때 0.75 s 굴려 보고 heading 방향으로 갔는지 본다. 에셋마다 조인트 축 방향이 다르기 때문
+- **간격은 검증기와 같은 소스로 잰다.** 본체 둘레 표본점과 USD 에서 읽은 진열대·기둥·벽 AABB 사이 거리를 10 Hz 로 기록한다. 정차 앞 제자리 회전 때 6.7 cm 까지 좁아지는 것은 사각형이 도는 기하학적 한계다 (standoff 0.20 − 모서리 반경 차 0.145)
+- `tools/verify_drive.py` 가 결과 JSON 을 10항목으로 본다: 완주, 정차 오차, 충돌 0, 거리 비율, 도크 복귀, 궤적이 바닥 안
+- 팔은 아직 없다. 정차 자세·파지 대상 좌표는 JSON 에 있으니 다음은 그 자리에서 팔을 뻗는 것
+
 ## 검증
 
-생성할 때마다 자동으로 165항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
+생성할 때마다 자동으로 175항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
 
 | 검증기 | 항목 수 | 보는 것 |
 |---|---|---|
@@ -151,6 +182,7 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 | `tools/verify_store.py` | 82 | 바닥·천장·벽·기둥·조명, 진열대 대수·높이·바닥 접촉·벽 내부, 상호 겹침(137대 쌍 검사), 기둥 간섭, 앞면이 통로 경계에 있는지, **AMR 직진 여유폭 · 제자리 회전 · 통로 입구 회전 가능성** (통로 10개 × 입구 16곳) |
 | `tools/verify_stock.py` | 7 | 상품 9,864개 전부: 참조가 풀려 메시가 있는지, 강체·콜라이더·질량, 밑면이 선반에 닿는지(±2 mm), 자기 슬롯 안(폭·깊이·높이)인지, 같은 진열대 안 겹침, 메타데이터 중복 |
 | `tools/verify_scenario.py` | 18 | 시나리오 JSON ↔ USD: 주문 품목의 프림·라벨 일치, 맨 앞 상품인지, 파지 좌표 = USD AABB 중심, **팔 도달**, 정차 본체+안전여유가 장애물과 안 겹침, 본체 ↔ 앞면 간격 = standoff, 경로 띠가 장애물과 안 겹침, 흔들림 라벨(오배치는 다른 품목군, 넘어짐은 rotateY −90)·조명 값·개수 통계, **같은 seed 재생성 시 JSON 동일** |
+| `tools/verify_drive.py` | 10 | Isaac 주행 결과: 완주, 정차 수 = 품목 수, 위치 오차 ≤ 5 cm, yaw ≤ 3°, 충돌 0, 최소 간격 ≥ 0, 주행/계획 거리 비율, 도크 복귀, 궤적이 바닥 안 |
 
 통행 검사는 상수가 아니라 USD 안의 실제 형상으로 한다. 기둥·엔드캡·가격표 레일이 통로로 튀어나온 만큼을 전부 반영한 뒤, AMR 본체 + 안전 여유가 들어가는지 본다.
 
@@ -173,7 +205,9 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 | `scene/scenario.py` | ✅ | seed → 매장 상태(빈 자리·yaw·넘어짐·오배치·조명) + 피킹 주문 + 정차·파지·경로 JSON |
 | `tools/verify_scenario.py` | ✅ | 시나리오 검증 18항목 (도달·정차·경로·재현성) |
 | `tools/plan_scenario.py` | ✅ | 시나리오 평면도 (경로·정차·흔들림 오버레이) |
-| 로봇 | ⬜ | AMR + 단일 팔, Isaac Sim 주행·검출·파지 |
+| `tools/drive_isaac.py` | ✅ | Isaac Sim 에서 Carter v1 이 주문 경로를 물리 주행 (체이스·1인칭 녹화, GIF) |
+| `tools/verify_drive.py` | ✅ | 주행 결과 검증 10항목 |
+| 팔 | ⬜ | 정차 자세에서 파지 대상으로 팔 뻗기 → 검출 → 파지 |
 
 ## 쓰는 법
 
@@ -215,6 +249,15 @@ EC2 에서 Isaac Sim GUI 를 띄워 노트북에서 직접 돌려보려면 WebRT
 bash tools/view_isaac.sh out/store_stocked.usda     # EC2 에서. TCP 49100 / UDP 47998 이 열린다
 ```
 
+주행 (Isaac Sim 물리). 주문 하나에 2~3 분:
+
+```bash
+source ~/.isaac_cache_env
+~/isaac6-venv/bin/python -m tools.drive_isaac out/scenario_007.json --order 2 --record   # → out/drive/drive_007_ORD_02.json + 프레임 + GIF
+.venv/bin/python -m tools.verify_drive out/drive/drive_007_ORD_02.json                    # 10항목
+.venv/bin/python -m tools.plan_scenario out/scenario_007.json --order 2 --drive out/drive/drive_007_ORD_02.json   # 계획 vs 실제 궤적
+```
+
 노트북에는 [Isaac Sim WebRTC Streaming Client](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/manual_livestream_clients.html) 를 설치하고 인스턴스 공인 IP 로 접속한다. 보안그룹에 내 IP 에서 위 포트 인바운드가 필요하다.
 
 ## 로드맵
@@ -222,7 +265,7 @@ bash tools/view_isaac.sh out/store_stocked.usda     # EC2 에서. TCP 49100 / UD
 1. **실측** — 마트 한 곳에서 부통로 1~2개. 타일·상품을 자로 쓰는 절차는 `docs/SURVEY.md`
 2. **상품 확장** — YCB 는 마트 상품이 32종뿐이라 통로가 단조롭다. Google Scanned Objects 로 넓힌다
 3. ~~**`scenario.py`**~~ — 완료. 다음은 가림(앞 상품이 뒤 상품을 가리는 배치)·기울어짐(90° 가 아닌 각) 추가
-4. **Isaac Sim** — `scenario_NNN.json` 의 정차 자세로 AMR 주행 → 상품 검출 → 파지 → 회수. 팔 마운트 높이·도달은 시나리오 통계(도달 57 %)로 정한다
+4. ~~**AMR 주행**~~ — 완료 (Carter v1, 유니사이클 추종). 다음: 로컬라이제이션(참값 대신 라이다/오도메트리), 팔 마운트(리프트 높이는 도달 통계 57 % 로 정한다) → 상품 검출 → 파지 → 회수
 5. **μ 스윕** — 선반·그리퍼 마찰계수는 실측 불가능한 값이라 하나로 고정하지 않고 스윕 축으로 둔다
 
 ## 레포 구조
@@ -238,7 +281,10 @@ tools/
   ycb_catalog.py  YCB 메시 → USD 에셋 + 카탈로그
   verify_stock.py 상품 배치 검증
   verify_scenario.py 시나리오 검증 (도달·정차·경로·재현성)
-  plan_scenario.py   시나리오 평면도 (경로 오버레이)
+  plan_scenario.py   시나리오 평면도 (경로 오버레이, --drive 로 실제 궤적)
+  drive_isaac.py     Isaac Sim 에서 AMR 주행 + 녹화
+  verify_drive.py    주행 결과 검증
+  frames_to_gif.py   프레임 → README 용 GIF
   verify_shelf.py 진열대 검증
   verify_store.py 매장 검증 + AMR 통행
   plan_store.py   평면도 렌더
