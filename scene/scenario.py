@@ -239,10 +239,14 @@ def pick_pose(unit: dict, item_center, robot: RobotSpec = ROBOT) -> dict:
     px = fx if nx else cx
     py = fy if ny else cy
     off = robot.pick_standoff + robot.base_w / 2
-    rx, ry = px - nx * off, py - ny * off
     left = (nx, ny)
-    yaw = math.degrees(math.atan2(-left[0], left[1]))   # heading = left 를 -90° 돌린 것
-    mount = (rx + nx * robot.arm_mount_dy, ry + ny * robot.arm_mount_dy, robot.base_h)
+    fwd = (left[1], -left[0])                     # heading = left 를 -90° 돌린 것
+    # 팔 베이스가 본체 중심에서 (arm_base_dx 앞, arm_mount_dy 왼쪽) 에 있으므로, 어깨가 상품 앞에 오도록 본체를 뒤로 물린다
+    rx = px - nx * off - fwd[0] * robot.arm_base_dx
+    ry = py - ny * off - fwd[1] * robot.arm_base_dx
+    yaw = math.degrees(math.atan2(fwd[1], fwd[0]))
+    mount = (rx + fwd[0] * robot.arm_base_dx + nx * robot.arm_mount_dy,
+             ry + fwd[1] * robot.arm_base_dx + ny * robot.arm_mount_dy, robot.arm_mount_z())
     reach = math.dist(mount, (cx, cy, cz))
     return {
         "x": round(rx, 4), "y": round(ry, 4), "yaw_deg": round(yaw, 1),
@@ -400,6 +404,12 @@ def generate(
             center = tuple((lo[i] + hi[i]) / 2 for i in range(3))
             unit = units[unit_path]
             pose = pick_pose(unit, center)
+            # 파지: 손가락이 통로 방향으로 닫힌다 (앞 상품 뒤에는 다음 상품이 붙어 있어 깊이 방향으로는 못 잡는다).
+            # 통로 방향 폭 = 진열대 로컬 y 폭. 진열대 회전이 90° 배수라 월드 AABB 에서 바로 읽는다
+            along = 1 if unit_normal(unit)[0] else 0
+            width_along = hi[along] - lo[along]
+            pose["graspable"] = width_along <= ROBOT.graspable_width()
+            pose["grasp_width_m"] = round(width_along, 4)
             candidates.append(
                 {
                     "prim": str(prim.GetPath()),
@@ -419,11 +429,12 @@ def generate(
                 }
             )
     reachable = [c for c in candidates if c["stop"]["reachable"]]
+    pickable = [c for c in reachable if c["stop"]["graspable"]]
     by_product: dict[str, list[dict]] = {}
-    for c in reachable:
+    for c in pickable:
         by_product.setdefault(c["product"], []).append(c)
 
-    # 주문 — 도달 가능한 상품 중에서. 한 주문 안에서는 상품이 겹치지 않는다
+    # 주문 — 도달 가능하고 그리퍼에 들어가는 상품 중에서. 한 주문 안에서는 상품이 겹치지 않는다
     router = Router()
     dock = (router.aisle_x[0], router.main_y[0])
     orng = random.Random(seed * 7919 + 3)
@@ -462,6 +473,9 @@ def generate(
             **pstats,
             "front_items": len(candidates),
             "reachable_front_items": len(reachable),
+            "graspable_front_items": sum(1 for c in candidates if c["stop"]["graspable"]),
+            "pickable_front_items": len(pickable),
+            "arm_mount_z": round(ROBOT.arm_mount_z(), 3),
             "unreachable_by_level": dict(sorted(unreach_by_level.items())),
             "lights_off": sum(1 for v in lights.values() if v["scale"] == 0),
         },
@@ -477,7 +491,8 @@ def describe(sc: dict) -> str:
     lines = [
         f"  상품 {s['items']}개 / {s['products']}종   슬롯열 {s['columns']}  →  yaw 흔들림 {s['jittered']}  넘어짐 {s['fallen']}  오배치 {s['misplaced']}  (facing 탈락 {s['dropped_facings']})",
         f"  조명 {len(sc['lights'])}개 중 꺼짐 {s['lights_off']}",
-        f"  맨 앞 상품 {s['front_items']}개 중 팔 도달 {s['reachable_front_items']}개  (미도달 단별 {s['unreachable_by_level']})",
+        f"  맨 앞 상품 {s['front_items']}개 중 팔 도달 {s['reachable_front_items']}개 (어깨 {s['arm_mount_z']} m, 미도달 단별 {s['unreachable_by_level']}),"
+        f" 그리퍼 폭 안 {s['graspable_front_items']}개, 둘 다 {s['pickable_front_items']}개",
     ]
     for o in sc["orders"]:
         names = ", ".join(l["product"].split("_", 1)[1] for l in o["lines"])

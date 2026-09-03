@@ -302,15 +302,31 @@ class RobotSpec:
     w_max: float = 1.0           # [설계] 회전 최고 각속도 rad/s
 
     # 양팔 설계 / 한 팔 구현 — 마운트 자리는 처음부터 둘 다 잡아둔다.
-    arm_mount_dy: float = 0.18   # [설계] 중심선에서 좌우 팔 마운트까지
+    arm_mount_dy: float = 0.12   # [설계] 중심선에서 왼쪽으로 팔 베이스까지 (상판 반폭 0.29 안, 베이스 반경 0.1)
     n_arms_built: int = 1        # [설계] 지금 실제로 붙이는 팔 수
 
     safety_margin: float = 0.15  # [설계] 장애물과 유지할 편측 여유 (내비게이션 inflation)
 
-    # 피킹 자세 — scenario.py 가 정차 위치와 도달 가능성을 이걸로 계산한다.
-    # 팔은 본체 왼쪽(+Y) 마운트에 있고, 정차할 때 왼쪽이 진열대를 본다.
-    arm_reach: float = 0.85      # [잠정] 마운트에서 그리퍼 끝까지 도달 반경 (UR5e 급 850 mm)
+    # 팔 — Franka Panda 를 Carter 상판에 얹는다. 정차할 때 왼쪽(+Y)이 진열대를 본다.
+    # 도달 모델: 어깨(panda_joint1 축) 를 중심으로 반경 arm_reach 인 구. tools/reach_study.py 로
+    # 마운트 높이를 훑어 봤다 (docs/img/reach_study.png). 어깨 0.85 m 가 최적(90 %)이지만 Carter
+    # 상판이 0.667 m 라 그 위에 바로 얹으면 어깨가 1.0 m — 바닥 데크(0단) 상품은 대부분 못 닿는다.
+    # 리프트 없이 가는 대신 그 사실을 통계로 남긴다.
+    arm_asset: str = "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd"  # [표준]
+    arm_base_dx: float = -0.08   # [설계] 팔 베이스의 본체 중심 기준 전후 위치 (상판 가운데, 카메라 마운트 뒤)
+    arm_base_dz: float = 0.667 + 0.01   # [표준] Carter 상판(에셋 chassis AABB 위 0.412 + spawn 0.255) + 틈 1 cm
+    arm_shoulder_dz: float = 0.333      # [표준] Franka 베이스 → panda_joint1 축 (어깨) 높이
+    arm_reach: float = 0.855     # [표준] Franka 도달 반경 (어깨 기준)
+    gripper_max_w: float = 0.08  # [표준] Franka 핸드 최대 벌림. 파지 폭 상한 (여유 두고 0.075 까지 집는다)
+    gripper_tcp_dz: float = 0.1034  # [표준] panda_hand → 손끝 사이(right_gripper 프레임)
     pick_standoff: float = 0.20  # [설계] 정차 시 본체 측면과 진열대 앞면 사이 거리
+
+    def arm_mount_z(self) -> float:
+        """도달 구의 중심(어깨) 높이. scenario.pick_pose 가 쓴다."""
+        return self.arm_base_dz + self.arm_shoulder_dz
+
+    def graspable_width(self) -> float:
+        return self.gripper_max_w - 0.005
 
     def turn_radius(self) -> float:
         """제자리 회전 시 필요한 반경 (차동구동 가정)."""
