@@ -21,7 +21,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade
 
 from scene.constants import METERS_PER_UNIT, SHELF, ShelfSpec
 
@@ -62,6 +62,36 @@ def box(
     if collision:
         UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
     return cube
+
+
+def material(stage: Usd.Stage, path: str, color: tuple[float, float, float], *, roughness: float = 0.5, metallic: float = 0.0) -> UsdShade.Material:
+    """단색 UsdPreviewSurface. 이미 있으면 그대로 돌려준다 (매장에서 137대가 공유)."""
+    prim = stage.GetPrimAtPath(path)
+    if prim:
+        return UsdShade.Material(prim)
+    mat = UsdShade.Material.Define(stage, path)
+    sh = UsdShade.Shader.Define(stage, f"{path}/Surface")
+    sh.CreateIdAttr("UsdPreviewSurface")
+    sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+    sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+    sh.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(metallic)
+    mat.CreateSurfaceOutput().ConnectToSource(sh.CreateOutput("surface", Sdf.ValueTypeNames.Token))
+    return mat
+
+
+def bind(prim: Usd.Prim, mat: UsdShade.Material) -> None:
+    UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
+
+
+# 곤돌라 색: 국내 마트 진열대는 대개 흰색/아이보리 분체도장 강판, 레일은 흰색 또는 유색
+def shelf_materials(stage: Usd.Stage) -> dict[str, UsdShade.Material]:
+    return {
+        "steel": material(stage, "/World/Looks/ShelfSteel", (0.86, 0.86, 0.84), roughness=0.45, metallic=0.2),
+        "post": material(stage, "/World/Looks/ShelfPost", (0.55, 0.56, 0.58), roughness=0.5, metallic=0.4),
+        "back": material(stage, "/World/Looks/ShelfBack", (0.90, 0.90, 0.88), roughness=0.7),
+        "kick": material(stage, "/World/Looks/ShelfKick", (0.25, 0.25, 0.26), roughness=0.8),
+        "rail": material(stage, "/World/Looks/PriceRail", (0.95, 0.95, 0.95), roughness=0.3),
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -128,6 +158,7 @@ def build_shelf(
     w, d, h = spec.width, spec.depth, spec.height
     inner_w = spec.inner_width()
     back_x = d - spec.back_t           # 백판 앞면의 x
+    mats = shelf_materials(stage)
 
     # 프레임 -------------------------------------------------
     frame = f"{prim_path}/Frame"
@@ -135,30 +166,33 @@ def build_shelf(
 
     # 지주 두 개: 백판 바로 앞, 좌우 끝. 측면은 그 외에 아무것도 없다.
     for tag, sign in (("L", -1.0), ("R", +1.0)):
-        box(
+        post = box(
             stage,
             f"{frame}/Post_{tag}",
             size=(spec.post_d, spec.post_w, h),
             center=(back_x - spec.post_d / 2, sign * (w / 2 - spec.post_w / 2), h / 2),
         )
+        bind(post.GetPrim(), mats["post"])
 
     # 백판: 맨 안쪽, 지주 사이
-    box(
+    back = box(
         stage,
         f"{frame}/Back",
         size=(spec.back_t, inner_w, h),
         center=(d - spec.back_t / 2, 0.0, h / 2),
     )
+    bind(back.GetPrim(), mats["back"])
 
     # 걸레받이: 바닥 데크 아래, 앞면이 데크보다 들어가 있다
     kick_h = spec.bottom_z - spec.deck_t
     kick_d = back_x - spec.kick_setback
-    box(
+    kick = box(
         stage,
         f"{frame}/Kick",
         size=(kick_d, inner_w, kick_h),
         center=(spec.kick_setback + kick_d / 2, 0.0, kick_h / 2),
     )
+    bind(kick.GetPrim(), mats["kick"])
 
     # 단 -----------------------------------------------------
     # 윗면이 level_heights() 높이에 오도록 중심을 두께의 절반만큼 내린다.
@@ -167,19 +201,21 @@ def build_shelf(
     thick = spec.level_thickness()
     for li, z_top in enumerate(heights):
         depth_i = back_x - fronts[li]
-        box(
+        lvl = box(
             stage,
             f"{prim_path}/Level_{li:02d}",
             size=(depth_i, inner_w, thick[li]),
             center=(fronts[li] + depth_i / 2, 0.0, z_top - thick[li] / 2),
         )
+        bind(lvl.GetPrim(), mats["steel"])
         # 가격표 레일: 앞단에 걸려 윗면과 같은 높이에서 아래로 내려온다
-        box(
+        rail = box(
             stage,
             f"{prim_path}/Rail_{li:02d}",
             size=(spec.rail_t, inner_w, spec.rail_h),
             center=(fronts[li] - spec.rail_t / 2, 0.0, z_top - spec.rail_h / 2),
         )
+        bind(rail.GetPrim(), mats["rail"])
 
     # 슬롯을 메타데이터로 남겨둔다 — stock.py 가 USD 만 보고도 채울 수 있게.
     prim = root.GetPrim()

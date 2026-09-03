@@ -1,20 +1,27 @@
 # grocery-picking-sim
 
-**실제 마트를 디지털 트윈으로 옮기고, 그 안에서 AMR + 로봇팔이 요청받은 상품을 선반에서 집어오게 하는 Isaac Sim 프로젝트.**
+**이마트·홈플러스급 대형마트를 디지털 트윈으로 옮기고, 그 안에서 AMR + 로봇팔이 요청받은 상품을 선반에서 집어오게 하는 Isaac Sim 프로젝트.**
 
 `Python → USD → Isaac Sim` · 환경을 손으로 만들지 않고 **치수 상수에서 생성**한다 · 생성 결과는 **되읽어 숫자로 검증**한다
 
 <p align="center">
-  <img src="docs/img/store_3d.gif" width="560" alt="매장 한 구역 — 생성된 USD 를 3D 로 돌려 본 것">
+  <img src="docs/img/isaac_overview.png" width="720" alt="Isaac Sim 렌더 — 매장 전체">
   <br>
-  <sub>생성된 매장 USD. 벽면 진열대 · 양면 곤돌라 + 엔드캡 · 기둥. 그림은 전부 USD 파일에서 자동으로 뽑는다 (Isaac Sim 렌더는 로봇을 올린 뒤 교체 예정)</sub>
+  <sub>Isaac Sim RTX 렌더. 파이썬이 생성한 USD 를 그대로 올린 것 (25.6 × 17.6 m, 부통로 8개, 진열대 137대). 상품은 아직 없다</sub>
+</p>
+
+<p align="center">
+  <img src="docs/img/isaac_aisle.png" width="352" alt="부통로 안 눈높이">
+  <img src="docs/img/isaac_main_aisle.png" width="352" alt="앞 주통로에서 본 엔드캡 열">
+  <br>
+  <sub>왼쪽: 부통로 0 안, 사람 눈높이. 왼편이 벽면 진열대(2.4 m), 오른편이 곤돌라(1.8 m). 오른쪽: 앞 주통로에서 엔드캡 열과 기둥</sub>
 </p>
 
 ---
 
 ## 목표
 
-- **디지털 트윈** — 실제 마트 한 구역(부통로 1~2개)을 실측해서 Isaac Sim 안에 같은 치수로 재현한다
+- **디지털 트윈** — 대형마트 식품 매장을 Isaac Sim 안에 재현한다. 규모는 매장 전체, 실측은 부통로 1~2개 (곤돌라 규격과 통로 폭은 매장 안에서 반복되므로 한두 통로 값이 전체에 적용된다)
 - **상품 피킹** — AMR이 통로를 주행하고, 팔이 선반에서 지정 상품을 찾아 집는다
 - **시나리오 생성** — 같은 생성기로 seed 기반 변형(가림·배치·조명)을 만들어 인지·파지 성능을 평가한다
 - **검증 가능한 환경** — "잘 만들어진 것 같다"가 아니라, 생성물을 되읽어 치수·통행 가능성을 자동으로 확인한다
@@ -57,7 +64,8 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 ### 진열대 (곤돌라 한 면)
 
 <p align="center">
-  <img src="docs/img/shelf_3d.gif" width="360" alt="곤돌라 진열대 한 면">
+  <img src="docs/img/isaac_shelf.png" width="400" alt="곤돌라 진열대 한 면 — Isaac 렌더">
+  <img src="docs/img/shelf_3d.gif" width="300" alt="형상 확인용 3D">
 </p>
 
 ```
@@ -78,34 +86,29 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 - **단마다 여유 높이가 다르다** — 최상단은 위에 판이 없다. 하나의 값으로 퉁치면 안 들어가는 상품을 배치하게 된다
 - 슬롯마다 "들어갈 수 있는 상품 최대 치수"를 같이 들고 있어 배치 단계에서 안 맞는 에셋을 거른다
 
-### 매장 한 구역
+### 매장 (대형마트 식품 매장 한 층의 일부)
 
 <p align="center">
-  <img src="docs/img/store_plan.png" width="380" alt="매장 평면도">
+  <img src="docs/img/store_plan.png" width="520" alt="매장 평면도">
+  <img src="docs/img/store_3d.gif" width="300" alt="형상 확인용 3D">
   <br>
-  <sub>USD 형상에서 뽑은 평면도. 파랑=벽면 진열대, 주황=양면 곤돌라, 빨강=엔드캡, 검정=기둥, 점선=조명, 초록=AMR (0.6 × 0.7 m)</sub>
+  <sub>USD 형상에서 뽑은 평면도. 파랑=벽면 진열대, 주황=양면 곤돌라, 빨강=엔드캡, 검정=기둥, 점선=조명, 초록=AMR (0.6 × 0.7 m). 기둥이 떨어진 자리는 진열대를 비운다</sub>
 </p>
 
-```
-   ┌────────────────────────────────────────┐
-   │             뒤 주통로 (2.7 m)            │
-   │  ┌──┐        ┌────┐        ┌──┐        │
-   │  │벽│ 부통로 0 │엔드캡│ 부통로 1 │벽│        │
-   │  │면│ (1.8 m) ├────┤ (1.8 m) │면│        │
-   │  │진│        │양면 │        │진│        │
-   │  │열│        │곤돌라│        │열│        │
-   │  │대│        ├────┤        │대│        │
-   │  └──┘        │엔드캡│        └──┘        │
-   │  ▣ 기둥       └────┘                    │
-   │             앞 주통로 (2.7 m)            │
-   └────────────────────────────────────────┘
-```
+| | 잠정값 | 근거 |
+|---|---|---|
+| 부통로 | 8개 × 2.2 m | 대형마트 부통로 2.0~2.4 m, 카트 두 대 교행 |
+| 주통로 | 앞·뒤 3.5 m | 대형마트 주통로 3.0~4.0 m |
+| 곤돌라 열 | 8대 × 1.2 m = 9.6 m | 열 길이 10 m 내외 |
+| 천장 | 5.0 m | 노출 천장 4.5~6 m |
+| 기둥 | 0.6 m 각, 9.6 × 8.4 m 그리드 | 곤돌라 열 간격의 배수로 두어 열 위에 오게 (설계 관행) |
+| 바닥 | 25.6 × 17.6 m = 451 m² | 부통로 8개가 만드는 크기 |
 
 - **주통로 / 부통로** — 주통로는 넓고(AMR 회전 구간), 부통로는 진열대 사이
 - **양면 곤돌라** — 등을 맞댄 두 면. 부통로 사이에 선다
 - **엔드캡** — 곤돌라 열 양 끝, 주통로를 보는 단면 진열대 (행사 상품 자리)
-- **벽면 진열대** — 벽에 붙고 곤돌라보다 높다 (2.1 m)
-- **기둥** — 건물 구조. 통로에 튀어나오는 네비게이션 장애물
+- **벽면 진열대** — 벽에 붙고 곤돌라보다 높다 (2.4 m)
+- **기둥** — 건물 구조 그리드. 열 위에 오면 그 자리 진열대를 비우고, 통로에 걸치면 통행 검사에 잡힌다
 - **천장 + 통로별 라인 조명** — 시나리오 생성기가 세기·색온도를 흔들 축
 - **60 cm 타일 바닥** — 실측할 때 타일이 자(尺)가 된다 (`docs/SURVEY.md`). 화면에서도 셀 수 있게 텍스처로 깐다
 - 매장 좌표 원점은 **바닥 모서리** — 실측 때 벽 모서리에서 재는 것과 같다
@@ -113,12 +116,12 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 
 ## 검증
 
-생성할 때마다 자동으로 100항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
+생성할 때마다 자동으로 140항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
 
 | 검증기 | 항목 수 | 보는 것 |
 |---|---|---|
 | `tools/verify_shelf.py` | 58 | 외형 치수, 지주 위치·측면 개방, 단별 높이·두께·앞단 위치, 레일, 홀 피치 스냅, 콜라이더, 슬롯 내부 여부, 대표 상품(캔·크래커·병) 적합성 |
-| `tools/verify_store.py` | 42 | 바닥·천장·벽·기둥·조명, 진열대 대수·높이·바닥 접촉·벽 내부, 상호 겹침, 기둥 간섭, 앞면이 통로 경계에 있는지, **AMR 직진 여유폭 · 제자리 회전 · 통로 입구 회전 가능성** |
+| `tools/verify_store.py` | 82 | 바닥·천장·벽·기둥·조명, 진열대 대수·높이·바닥 접촉·벽 내부, 상호 겹침(137대 쌍 검사), 기둥 간섭, 앞면이 통로 경계에 있는지, **AMR 직진 여유폭 · 제자리 회전 · 통로 입구 회전 가능성** (통로 10개 × 입구 16곳) |
 
 통행 검사는 상수가 아니라 USD 안의 실제 형상으로 한다. 기둥·엔드캡·가격표 레일이 통로로 튀어나온 만큼을 전부 반영한 뒤, AMR 본체 + 안전 여유가 들어가는지 본다.
 
@@ -128,11 +131,12 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 |---|---|---|
 | `scene/constants.py` | ✅ | 치수 단일 진실 공급원. 출처 태그 부착, 대부분 `[잠정]` |
 | `scene/shelf.py` | ✅ | 곤돌라 진열대 생성기 (지주·백판·데크·걸레받이·선반·레일, 슬롯 좌표) |
-| `scene/store.py` | ✅ | 매장 생성기 (주·부통로, 벽면·양면·엔드캡, 기둥, 조명, 타일 바닥) |
+| `scene/store.py` | ✅ | 매장 생성기 (대형마트 규모, 주·부통로, 벽면·양면·엔드캡, 기둥 그리드, 조명, 타일 바닥) |
 | `tools/verify_shelf.py` | ✅ | 진열대 대조 검증 58항목 |
-| `tools/verify_store.py` | ✅ | 매장 대조 검증 + AMR 통행 42항목 |
+| `tools/verify_store.py` | ✅ | 매장 대조 검증 + AMR 통행 82항목 |
 | `tools/plan_store.py` | ✅ | USD → 평면도 PNG |
-| `tools/render_3d.py` | ✅ | USD → 3D PNG / 회전 GIF |
+| `tools/render_3d.py` | ✅ | USD → 3D PNG / 회전 GIF (matplotlib, 형상 확인용) |
+| `tools/render_isaac.py` | ✅ | USD → Isaac Sim RTX 렌더 (헤드리스) |
 | 실측 | ⬜ | `docs/SURVEY.md` 절차대로 통로 1~2개 |
 | `scene/stock.py` | ⬜ | YCB / GSO 를 슬롯에 채움 |
 | `scene/scenario.py` | ⬜ | seed 기반 시나리오 생성 |
@@ -147,12 +151,17 @@ python3 -m venv .venv && .venv/bin/pip install usd-core matplotlib   # matplotli
 .venv/bin/python -m tools.verify_shelf out/shelf.usda         # 58항목 검증
 
 .venv/bin/python -m scene.store --out out/store.usda          # 매장 생성 (+ floor_tile.png)
-.venv/bin/python -m tools.verify_store out/store.usda         # 42항목 검증
+.venv/bin/python -m tools.verify_store out/store.usda         # 82항목 검증
 .venv/bin/python -m tools.plan_store out/store.usda           # 평면도 → out/store_plan.png
 .venv/bin/python -m tools.render_3d  out/store.usda --gif out/store_3d.gif   # 3D 회전 GIF
 ```
 
-Isaac Sim은 `out/store.usda`를 스테이지에 얹기만 하면 된다. Isaac Sim 파이썬에도 `pxr`이 들어 있어 별도 venv 없이 돌릴 수도 있다.
+Isaac Sim은 `out/store.usda`를 스테이지에 얹기만 하면 된다. 실제 렌더는 Isaac Sim 파이썬으로:
+
+```bash
+source ~/.isaac_cache_env   # OMNI_KIT_ACCEPT_EULA=YES 등
+~/isaac6-venv/bin/python -m tools.render_isaac out/store.usda --out out/isaac
+```
 
 ## 로드맵
 
@@ -174,7 +183,8 @@ tools/
   verify_shelf.py 진열대 검증
   verify_store.py 매장 검증 + AMR 통행
   plan_store.py   평면도 렌더
-  render_3d.py    3D PNG / GIF 렌더
+  render_3d.py    3D PNG / GIF 렌더 (matplotlib)
+  render_isaac.py Isaac Sim RTX 렌더
 docs/
   SURVEY.md       실측 안내 — 무엇을, 어떻게, 얼마나만 잴 것인가
   LOG.md          개발 기록 — 무엇을 왜 했는지, 날짜순

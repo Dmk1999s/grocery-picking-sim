@@ -25,7 +25,7 @@ from pathlib import Path
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics, UsdShade
 
 from scene.constants import ROBOT, SHELF, STORE, RobotSpec, ShelfSpec, StoreSpec
-from scene.shelf import box, build_shelf, new_stage
+from scene.shelf import bind, box, build_shelf, material, new_stage
 
 
 # ─────────────────────────────────────────────────────────────
@@ -45,6 +45,14 @@ def placements(store: StoreSpec = STORE, shelf: ShelfSpec = SHELF) -> list[dict]
     cap_spec = store.endcap_spec(shelf)
     out: list[dict] = []
 
+    # 기둥이 떨어진 자리의 진열대는 비운다. 실제 매장은 기둥을 피해 진열대를 놓고
+    # 그 자리는 기둥 마감이나 POP 로 채운다. 판정은 바닥 점유(가격표 레일 제외).
+    half = store.column_size / 2
+    cols = [(x - half, y - half, x + half, y + half) for x, y in store.columns(shelf)]
+
+    def hits_column(x0: float, y0: float, x1: float, y1: float) -> bool:
+        return any(x0 < cx1 and cx0 < x1 and y0 < cy1 and cy0 < y1 for cx0, cy0, cx1, cy1 in cols)
+
     # 벽면 진열대: 주통로 사이 전체 길이를 최대한 채우고 가운데 정렬
     span_lo, span_hi = store.main_aisle_width, ly - store.main_aisle_width
     n_wall = int((span_hi - span_lo) / wall_spec.width + 1e-9)
@@ -60,6 +68,10 @@ def placements(store: StoreSpec = STORE, shelf: ShelfSpec = SHELF) -> list[dict]
             n = n_wall if is_wall else store.shelves_per_run
             y0 = wall_y0 if is_wall else run_y0
             for j in range(n):
+                yc = y0 + spec.width * (j + 0.5)
+                x_body = (x_face - spec.depth, x_face) if side == "L" else (x_face, x_face + spec.depth)
+                if hits_column(x_body[0], yc - spec.width / 2, x_body[1], yc + spec.width / 2):
+                    continue
                 out.append(
                     {
                         "path": f"/World/Shelves/Aisle_{a:02d}/{side}/Unit_{j:02d}",
@@ -68,7 +80,7 @@ def placements(store: StoreSpec = STORE, shelf: ShelfSpec = SHELF) -> list[dict]
                         "side": side,
                         "index": j,
                         "spec": spec,
-                        "translate": (x_face, y0 + spec.width * (j + 0.5), 0.0),
+                        "translate": (x_face, yc, 0.0),
                         "rotate": rot,
                     }
                 )
@@ -80,6 +92,9 @@ def placements(store: StoreSpec = STORE, shelf: ShelfSpec = SHELF) -> list[dict]
             ("Front", store.main_aisle_width, 90.0),
             ("Back", ly - store.main_aisle_width, -90.0),
         ):
+            y_body = (y_face, y_face + cap_spec.depth) if tag == "Front" else (y_face - cap_spec.depth, y_face)
+            if hits_column(xc - cap_spec.width / 2, y_body[0], xc + cap_spec.width / 2, y_body[1]):
+                continue
             out.append(
                 {
                     "path": f"/World/Shelves/EndCap/Gondola_{g:02d}_{tag}",
@@ -198,21 +213,30 @@ def build_store(
     UsdGeom.Scope.Define(stage, "/World/Store/Looks")
     _floor(stage, "/World/Store/Floor", lx, ly, store.tile, tile_tex_rel)
 
+    wall_mat = material(stage, "/World/Looks/Wall", (0.88, 0.88, 0.86), roughness=0.9)
+    ceil_mat = material(stage, "/World/Looks/Ceiling", (0.92, 0.92, 0.92), roughness=0.9)
+    col_mat = material(stage, "/World/Looks/Column", (0.80, 0.80, 0.78), roughness=0.8)
+
     # 천장: 조명 반사면. 물리는 필요 없다.
-    box(stage, "/World/Store/Ceiling", size=(lx + 2 * t, ly + 2 * t, t), center=(lx / 2, ly / 2, h + t / 2), collision=False)
+    ceil = box(stage, "/World/Store/Ceiling", size=(lx + 2 * t, ly + 2 * t, t), center=(lx / 2, ly / 2, h + t / 2), collision=False)
+    bind(ceil.GetPrim(), ceil_mat)
 
     # 벽 4면: 바닥 사각형 바깥에 붙는다. 모서리는 동서 벽이 채운다.
     UsdGeom.Scope.Define(stage, "/World/Store/Walls")
-    box(stage, "/World/Store/Walls/West", size=(t, ly + 2 * t, h), center=(-t / 2, ly / 2, h / 2))
-    box(stage, "/World/Store/Walls/East", size=(t, ly + 2 * t, h), center=(lx + t / 2, ly / 2, h / 2))
-    box(stage, "/World/Store/Walls/South", size=(lx, t, h), center=(lx / 2, -t / 2, h / 2))
-    box(stage, "/World/Store/Walls/North", size=(lx, t, h), center=(lx / 2, ly + t / 2, h / 2))
+    for name, size, center in (
+        ("West", (t, ly + 2 * t, h), (-t / 2, ly / 2, h / 2)),
+        ("East", (t, ly + 2 * t, h), (lx + t / 2, ly / 2, h / 2)),
+        ("South", (lx, t, h), (lx / 2, -t / 2, h / 2)),
+        ("North", (lx, t, h), (lx / 2, ly + t / 2, h / 2)),
+    ):
+        bind(box(stage, f"/World/Store/Walls/{name}", size=size, center=center).GetPrim(), wall_mat)
 
     # 기둥
     UsdGeom.Scope.Define(stage, "/World/Store/Columns")
     c = store.column_size
-    for i, (x, y) in enumerate(store.columns):
-        box(stage, f"/World/Store/Columns/Column_{i:02d}", size=(c, c, h), center=(x, y, h / 2))
+    for i, (x, y) in enumerate(store.columns(shelf)):
+        col = box(stage, f"/World/Store/Columns/Column_{i:02d}", size=(c, c, h), center=(x, y, h / 2))
+        bind(col.GetPrim(), col_mat)
 
     # 조명: 통로마다 천장에 라인 하나, 아래(-Z)를 비춘다
     UsdGeom.Scope.Define(stage, "/World/Store/Lights")
@@ -248,12 +272,14 @@ def describe(store: StoreSpec = STORE, shelf: ShelfSpec = SHELF, robot: RobotSpe
     lx, ly = store.footprint(shelf)
     ps = placements(store, shelf)
     kinds = {k: sum(1 for p in ps if p["kind"] == k) for k in ("wall", "gondola", "endcap")}
+    cols = store.columns(shelf)
     lines = [
-        f"  바닥      {lx:.2f} × {ly:.2f} m  (타일 {store.tile * 100:.0f} cm → {lx / store.tile:.1f} × {ly / store.tile:.1f} 장)",
-        f"  천장      {store.ceiling_h:.2f} m,  기둥 {len(store.columns)}개 ({store.column_size * 100:.0f} cm 각)",
-        f"  진열대    벽면 {kinds['wall']} + 곤돌라 면 {kinds['gondola']} + 엔드캡 {kinds['endcap']} = {len(ps)}대",
+        f"  바닥      {lx:.1f} × {ly:.1f} m = {lx * ly:.0f} m²  (타일 {store.tile * 100:.0f} cm → {lx / store.tile:.0f} × {ly / store.tile:.0f} 장)",
+        f"  천장      {store.ceiling_h:.2f} m,  기둥 {len(cols)}개 ({store.column_size * 100:.0f} cm 각, 그리드 {store.column_every_lines * (store.aisle_width + 2 * shelf.depth):.1f} × {store.column_pitch_y:.1f} m)",
+        f"  진열대    벽면 {kinds['wall']} + 곤돌라 면 {kinds['gondola']} + 엔드캡 {kinds['endcap']} = {len(ps)}대  (기둥 자리는 비움)",
+        f"  통로      부통로 {store.n_aisles}개 × {store.aisle_width:.2f} m,  주통로 2개 × {store.main_aisle_width:.2f} m",
     ]
-    for cor in corridors(store, shelf):
+    for cor in corridors(store, shelf)[:1] + corridors(store, shelf)[-2:-1]:
         (x0, x1), (y0, y1) = cor["x"], cor["y"]
         w = (x1 - x0) if cor["axis"] == "y" else (y1 - y0)
         lines.append(f"  {cor['name']:<8} 폭 {w:.2f} m   x∈[{x0:.2f},{x1:.2f}] y∈[{y0:.2f},{y1:.2f}]")

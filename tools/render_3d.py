@@ -53,6 +53,7 @@ def main() -> None:
     ap.add_argument("--gif", default=None)
     ap.add_argument("--frames", type=int, default=36)
     ap.add_argument("--elev", type=float, default=28.0)
+    ap.add_argument("--dpi", type=int, default=110)
     ap.add_argument("--azim", type=float, default=-60.0, help="PNG 시점·GIF 시작 각도")
     ap.add_argument("--skip", default="Ceiling,/Walls/", help="가리는 프림은 뺀다 (경로 부분 문자열, 콤마 구분)")
     args = ap.parse_args()
@@ -102,7 +103,7 @@ def main() -> None:
     if args.png:
         ax.view_init(elev=args.elev, azim=args.azim)
         Path(args.png).parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(args.png, dpi=110)
+        fig.savefig(args.png, dpi=args.dpi)
         print(f"저장: {args.png}")
 
     if args.gif:

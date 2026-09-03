@@ -96,7 +96,7 @@ def main() -> int:
         c.eq("벽 높이 = 천장", whi[2], st.ceiling_h)
 
     cols = [p for p in stage.GetPrimAtPath("/World/Store/Columns").GetChildren() if p.IsA(UsdGeom.Cube)]
-    c.eq("기둥 개수", len(cols), len(st.columns))
+    c.eq("기둥 개수", len(cols), len(st.columns(sh)))
     col_boxes = [world_bbox(cache, p) for p in cols]
     for i, (lo, hi) in enumerate(col_boxes):
         c.eq(f"Column_{i:02d} 단면", hi[0] - lo[0], st.column_size)
