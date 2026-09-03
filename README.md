@@ -174,12 +174,20 @@ aws s3 sync --no-sign-request --exclude "*" --include "*_google_16k.tgz" s3://yc
 .venv/bin/python -m tools.verify_stock out/store_stocked.usda
 ```
 
-Isaac Sim은 `out/store.usda`를 스테이지에 얹기만 하면 된다. 실제 렌더는 Isaac Sim 파이썬으로:
+Isaac Sim은 `out/store_stocked.usda`를 스테이지에 얹기만 하면 된다. 실제 렌더는 Isaac Sim 파이썬으로:
 
 ```bash
 source ~/.isaac_cache_env   # OMNI_KIT_ACCEPT_EULA=YES 등
-~/isaac6-venv/bin/python -m tools.render_isaac out/store.usda --out out/isaac
+~/isaac6-venv/bin/python -m tools.render_isaac out/store_stocked.usda --out out/isaac
 ```
+
+EC2 에서 Isaac Sim GUI 를 띄워 노트북에서 직접 돌려보려면 WebRTC 스트리밍:
+
+```bash
+bash tools/view_isaac.sh out/store_stocked.usda     # EC2 에서. TCP 49100 / UDP 47998 이 열린다
+```
+
+노트북에는 [Isaac Sim WebRTC Streaming Client](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/manual_livestream_clients.html) 를 설치하고 인스턴스 공인 IP 로 접속한다. 보안그룹에 내 IP 에서 위 포트 인바운드가 필요하다.
 
 ## 로드맵
 
@@ -205,6 +213,7 @@ tools/
   plan_store.py   평면도 렌더
   render_3d.py    3D PNG / GIF 렌더 (matplotlib)
   render_isaac.py Isaac Sim RTX 렌더
+  view_isaac.sh   Isaac Sim GUI 를 WebRTC 로 스트리밍 (EC2 → 노트북)
 assets/ycb/
   catalog.json    상품 치수·질량·분류 (커밋). 메시·USD 는 받아서 만든다 (gitignore)
 docs/

@@ -24,8 +24,12 @@
 - instanceable 프림 안은 `Usd.PrimRange(prim, Usd.TraverseInstanceProxies())` 로 순회해야 메시가 보인다. 검증기가 처음엔 이걸 몰라 참조 실패로 잘못 판정했다
 - YCB 텍스처 PNG 가 한 장에 최대 11 MB (85장 430 MB). 렌더가 느리면 다운스케일한다
 
+**Isaac GUI 스트리밍**
+- EC2 에는 디스플레이도 DCV 도 없다. Isaac Sim 6 에 들어 있는 `isaacsim.exp.full.streaming` 앱을 `--no-window` 로 띄우면 WebRTC 로 GUI 가 나간다 (`tools/view_isaac.sh`). 공인 IP 를 `primaryStream.publicIp` 로 넘겨야 NAT 뒤에서 ICE 가 붙고, `quitOnSessionEnded=false` 로 둬야 클라이언트가 끊겨도 앱이 안 죽는다
+- 포트: TCP 49100 시그널링, UDP 47998 미디어. 보안그룹은 인스턴스에 AWS 자격증명이 없어 여기서 못 연다 — 콘솔에서
+
 **남은 것**
-- 상품 채운 매장 Isaac 렌더 확인 → README 그림
+- 상품 채운 매장 Isaac 렌더 확인 → README 그림 (완료)
 - GSO 로 상품 확장, `scenario.py`
 
 ---
