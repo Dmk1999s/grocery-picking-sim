@@ -37,7 +37,9 @@ ap.add_argument("--render-every", type=int, default=18, help="물리 스텝 몇 
 ap.add_argument("--gif-fps", type=int, default=10)
 ap.add_argument("--gif-width", type=int, default=400)
 ap.add_argument("--gif-frames", type=int, default=120, help="GIF 최대 프레임 (넘으면 건너뛰며 고른다)")
-ap.add_argument("--dwell", type=float, default=1.5, help="정차점에서 머무는 시간 s (피킹 자리)")
+ap.add_argument("--dwell", type=float, default=1.5, help="정차점에서 머무는 시간 s (팔 없을 때)")
+ap.add_argument("--teleport", action="store_true", help="주행 없이 정차 자세로 순간이동 (파지 실험용)")
+ap.add_argument("--arm", action="store_true", help="Carter 위에 Franka 를 얹고 정차마다 상품을 집어 바구니에 넣는다")
 ap.add_argument("--max-steps", type=int, default=60 * 600, help="안전장치")
 ap.add_argument("--dt", type=float, default=1 / 60)
 args = ap.parse_args()
@@ -102,10 +104,18 @@ robot = WheeledRobot(
     positions=[[dock["x"], dock["y"], ROBOT.spawn_z]],
     orientations=[quat_z(dock["yaw_deg"])],
 )
+arm = None
+if args.arm:
+    from tools.arm_isaac import Arm
+    arm = Arm(stage, app, init_pose=(dock["x"], dock["y"], math.radians(dock["yaw_deg"])))
 app.update()
 SimulationManager.setup_simulation(dt=args.dt, device="cpu")
 app_utils.play()
 app.update()
+if arm:
+    arm.start()
+    arm.follow(dock["x"], dock["y"], math.radians(dock["yaw_deg"]))
+    print(f"팔: Franka 베이스 {ROBOT.arm_base_dz:.3f} m, 어깨 {ROBOT.arm_mount_z():.2f} m, tuck 손끝(베이스 기준) {arm.tuck_tcp}")
 # 바퀴는 속도 드라이브: 강성 0, 감쇠는 에셋 값이 작으면 올린다
 st, dp = robot.get_dof_gains()
 wi = robot._resolve_wheel_dof_indices()
@@ -165,7 +175,10 @@ if args.record:
     for prim in Usd.PrimRange(stage.GetPrimAtPath("/World/Robot")):
         if prim.IsA(UsdGeom.Camera) and "first_person" in prim.GetName():
             fp_path = str(prim.GetPath())
-    cams = {"chase": "/World/ChaseCam"} | ({"fpv": fp_path} if fp_path else {})
+    close = UsdGeom.Camera.Define(stage, "/World/CloseCam")      # 파지 순간 손끝 클로즈업 (라벨 프레임에만 저장)
+    close.CreateFocalLengthAttr(24.0)
+    close.CreateClippingRangeAttr(Gf.Vec2f(0.05, 200.0))
+    cams = {"chase": "/World/ChaseCam", "close": "/World/CloseCam"} | ({"fpv": fp_path} if fp_path else {})
     annots = {}
     for name, path in cams.items():
         rp = rep.create.render_product(path, tuple(args.res))
@@ -184,20 +197,38 @@ if args.record:
         xf.AddTransformOp().Set(m)
 
     frame_idx = [0]
+    close_target = [None]                 # (eye, at) 를 pick 이 정해 준다
+
+    def place_close() -> None:
+        if close_target[0] is None:
+            return
+        eye, at = close_target[0]
+        m = Gf.Matrix4d().SetLookAt(Gf.Vec3d(*eye), Gf.Vec3d(*at), Gf.Vec3d(0, 0, 1)).GetInverse()
+        xf = UsdGeom.Xformable(close)
+        xf.ClearXformOpOrder()
+        xf.AddTransformOp().Set(m)
 
     def capture(label: str | None = None) -> None:
         x, y, yaw = pose()
         place_chase(x, y, yaw)
+        place_close()
         app.update()                          # 렌더 (물리도 한 스텝 간다)
+        if label:
+            app.update()                      # annotator 는 직전 프레임을 돌려주므로 카메라를 옮긴 뒤 한 번 더
         for name, an in annots.items():
+            if name == "close" and not label:
+                continue
             img = an.get_data()
             if img is None or img.size == 0:
                 continue
             im = Image.fromarray(img[..., :3])
-            im.save(frames_dir / f"{name}_{frame_idx[0]:05d}.png")
+            if name != "close":
+                im.save(frames_dir / f"{name}_{frame_idx[0]:05d}.png")
             if label:
                 im.save(out_dir / f"{tag}_{label}_{name}.png")
         frame_idx[0] += 1
+
+    capture.close_target = close_target
 
     recorder = capture
 
@@ -238,8 +269,15 @@ steps = 0
 t_wall = time.time()
 
 
+BRAKE = [False]     # 파지 중 본체 제동 (속도 0 유지)
+
+
 def tick(n: int = 1) -> None:
     global sim_t, dist_total, steps, prev, min_clear, min_clear_at, collide_frames
+    if arm:
+        arm.follow(*prev)
+    if BRAKE[0]:
+        robot.set_velocities(linear_velocities=[[0.0, 0.0, 0.0]], angular_velocities=[[0.0, 0.0, 0.0]])
     step(n)
     steps += n
     sim_t += n * args.dt
@@ -289,10 +327,18 @@ def go_to(tx: float, ty: float) -> None:
 
 for i, wp in enumerate(waypoints[1:], 1):
     tx, ty = wp["x"], wp["y"]
-    x, y, _ = pose()
-    turn_to(math.atan2(ty - y, tx - x))
-    go_to(tx, ty)
-    if wp["kind"] in ("pick", "dock"):
+    if args.teleport:
+        if wp["kind"] != "pick":
+            continue
+        robot.set_world_poses(positions=[[tx, ty, ROBOT.spawn_z]], orientations=[quat_z(wp["yaw_deg"])])
+        robot.set_velocities(linear_velocities=[[0.0, 0.0, 0.0]], angular_velocities=[[0.0, 0.0, 0.0]])
+        prev = (tx, ty, math.radians(wp["yaw_deg"]))
+        tick(30)
+    else:
+        x, y, _ = pose()
+        turn_to(math.atan2(ty - y, tx - x))
+        go_to(tx, ty)
+    if wp["kind"] in ("pick", "dock") and not args.teleport:
         # 제자리 회전 중 캐스터가 본체를 몇 cm 밀어낸다. 오차가 남으면 한 번 다가간 뒤 다시 돈다.
         # 마지막 동작은 항상 회전이어야 정차 yaw 가 맞는다
         turn_to(math.radians(wp["yaw_deg"]))
@@ -313,7 +359,31 @@ for i, wp in enumerate(waypoints[1:], 1):
         print(f"  정차 {len(picks)}/{len(order['lines'])}  {line['product']:<24} 위치 오차 {err * 100:.1f} cm  yaw 오차 {yaw_err:+.1f}°  t={sim_t:.1f}s")
         if recorder:
             recorder(label=f"pick{len(picks)}")
-        tick(int(args.dwell / args.dt))
+        if arm:
+            from isaacsim.core.experimental.prims import RigidPrim
+            unit_items = [str(p.GetPath()) for p in stage.GetPrimAtPath(f"{line['unit']}/Stock").GetChildren()]
+            rp = RigidPrim(unit_items)
+
+            def item_poses():
+                pos = rp.get_world_poses()[0].numpy()
+                return {k: tuple(pos[i]) for i, k in enumerate(unit_items)}
+
+            def on_event(name):
+                if recorder:
+                    # 클로즈업: 상품 앞 통로 쪽, 비스듬히 위에서 상품 중심을 본다
+                    cx_, cy_, cz_ = line["item_center"]
+                    nx_, ny_, _ = line["approach_dir"]
+                    fx_, fy_ = math.cos(math.radians(wp["yaw_deg"])), math.sin(math.radians(wp["yaw_deg"]))
+                    recorder.close_target[0] = ((cx_ - nx_ * 0.55 + fx_ * 0.45, cy_ - ny_ * 0.55 + fy_ * 0.45, cz_ + 0.30), (cx_, cy_, cz_))
+                    recorder(label=f"pick{len(picks)}_{name}")
+
+            BRAKE[0] = True
+            g = arm.pick(line, item_poses, tick, args.dt, on_event=on_event)
+            BRAKE[0] = False
+            picks[-1]["grasp"] = g
+            print(f"      파지 {'성공' if g.get('success') else '실패'}  단계 {g['phase']}  손가락 간격 {g.get('finger_gap_m', 0) * 100:.1f} cm (폭 {g.get('grasp_width_m', 0) * 100:.1f})  들림 {g.get('lift_m', 0) * 100:.1f} cm  잡음 {g['held_after_retract']}  바구니 {g['in_bin']}  이웃 교란 {g['disturbed_neighbors']}  IK 오차 {g['ik_err_max_m'] * 1000:.0f} mm")
+        else:
+            tick(int(args.dwell / args.dt))
     elif i % 3 == 0:
         print(f"  경유점 {i}/{len(waypoints) - 1}  t={sim_t:.1f}s  이동 {dist_total:.1f} m")
 
@@ -325,6 +395,8 @@ result = {
     "completed": steps < args.max_steps,
     "dock_return_err_m": round(math.hypot(x - dock["x"], y - dock["y"]), 4),
     "min_clearance_m": round(min_clear, 4), "min_clearance_at": min_clear_at, "collision_frames": collide_frames,
+    "arm": bool(arm),
+    "grasp_success": sum(1 for p in picks if p.get("grasp", {}).get("success")) if arm else None,
     "picks": picks,
     "trace": trace,
 }
@@ -333,6 +405,8 @@ res_path.write_text(json.dumps(result, ensure_ascii=False, indent=1))
 print(f"\n저장: {res_path}")
 print(f"  계획 {result['planned_length_m']} m → 주행 {result['driven_length_m']} m, 시뮬 {sim_t:.1f} s, 벽시계 {result['wall_time_s']} s")
 print(f"  최소 간격 {min_clear * 100:.1f} cm ({min_clear_at}), 충돌 프레임 {collide_frames}, 도크 복귀 오차 {result['dock_return_err_m'] * 100:.1f} cm")
+if arm:
+    print(f"  파지 성공 {result['grasp_success']}/{len(picks)}")
 
 if recorder:
     from tools.frames_to_gif import make_gif

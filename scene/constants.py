@@ -313,20 +313,23 @@ class RobotSpec:
     # 상판이 0.667 m 라 그 위에 바로 얹으면 어깨가 1.0 m — 바닥 데크(0단) 상품은 대부분 못 닿는다.
     # 리프트 없이 가는 대신 그 사실을 통계로 남긴다.
     arm_asset: str = "/Isaac/Robots/FrankaRobotics/FrankaPanda/franka.usd"  # [표준]
-    arm_base_dx: float = -0.08   # [설계] 팔 베이스의 본체 중심 기준 전후 위치 (상판 가운데, 카메라 마운트 뒤)
+    arm_base_dx: float = -0.02   # [설계] 팔 베이스의 본체 중심 기준 전후 위치. 베이스가 뒤로 15 cm 나오므로 바구니(-0.20 뒤)와 안 겹치게
     arm_base_dz: float = 0.667 + 0.01   # [표준] Carter 상판(에셋 chassis AABB 위 0.412 + spawn 0.255) + 틈 1 cm
     arm_shoulder_dz: float = 0.333      # [표준] Franka 베이스 → panda_joint1 축 (어깨) 높이
     arm_reach: float = 0.855     # [표준] Franka 도달 반경 (어깨 기준)
     gripper_max_w: float = 0.08  # [표준] Franka 핸드 최대 벌림. 파지 폭 상한 (여유 두고 0.075 까지 집는다)
     gripper_tcp_dz: float = 0.1034  # [표준] panda_hand → 손끝 사이(right_gripper 프레임)
     pick_standoff: float = 0.20  # [설계] 정차 시 본체 측면과 진열대 앞면 사이 거리
+    grasp_min_z_above_shelf: float = 0.055  # [표준] 손 몸통 반높이 ~4 cm + 여유. 손끝이 선반 위 이만큼 위에 있어야 한다
+    grasp_min_height: float = 0.07          # [설계] 옆에서 집을 수 있는 상품 최소 높이 (= 위 값 + 윗면 여유 1.5 cm)
 
     def arm_mount_z(self) -> float:
         """도달 구의 중심(어깨) 높이. scenario.pick_pose 가 쓴다."""
         return self.arm_base_dz + self.arm_shoulder_dz
 
     def graspable_width(self) -> float:
-        return self.gripper_max_w - 0.005
+        """주문에 넣을 상품의 통로 방향 폭 상한. 벌림 8 cm 에서 양쪽 5 mm 여유 (IK 오차 ~4 mm)."""
+        return self.gripper_max_w - 0.010
 
     def turn_radius(self) -> float:
         """제자리 회전 시 필요한 반경 (차동구동 가정)."""

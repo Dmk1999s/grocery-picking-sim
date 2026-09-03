@@ -9,6 +9,7 @@
   - 주행 거리가 계획의 0.95~1.25 배 (경로를 크게 벗어나지 않았다)
   - 도크 복귀 오차 ≤ 5 cm
   - 궤적이 모두 매장 바닥 안
+  - (--arm) 파지 단계 완료, 성공 ≥ 절반, IK 오차 ≤ 1 cm, 이웃 교란 없음
 """
 
 from __future__ import annotations
@@ -46,6 +47,16 @@ def main() -> int:
     ratio = d["driven_length_m"] / d["planned_length_m"]
     c.true("주행 거리 / 계획 거리 0.95~1.25", 0.95 <= ratio <= 1.25, f"{d['driven_length_m']} / {d['planned_length_m']} = {ratio:.3f}")
     c.true(f"도크 복귀 오차 ≤ {POS_TOL * 100:.0f} cm", d["dock_return_err_m"] <= POS_TOL, f"{d['dock_return_err_m'] * 100:.1f} cm")
+    if d.get("arm"):
+        gs = [p.get("grasp", {}) for p in d["picks"]]
+        c.true("모든 정차에서 파지 시도가 끝까지 감 (phase done)", all(g.get("phase") == "done" for g in gs),
+               ", ".join(g.get("phase", "?") for g in gs))
+        n_ok = sum(1 for g in gs if g.get("success"))
+        c.true("파지 성공 ≥ 절반", n_ok * 2 >= len(gs), f"{n_ok}/{len(gs)}  (들림 {sum(1 for g in gs if g.get('lifted'))}, 바구니 {sum(1 for g in gs if g.get('in_bin'))})")
+        ik = max((g.get("ik_err_max_m", 0) or 0) for g in gs)
+        c.true("IK 위치 오차 ≤ 1 cm", ik <= 0.01, f"최대 {ik * 1000:.1f} mm")
+        dist = sum(g.get("disturbed_neighbors", 0) for g in gs)
+        c.true("이웃 상품 교란(> 2 cm) 없음", dist == 0, f"{dist}개")
     lx, ly = STORE.footprint(SHELF)
     outside = [t for t in d["trace"] if not (0 <= t[1] <= lx and 0 <= t[2] <= ly)]
     c.true("궤적이 매장 바닥 안", not outside, f"{len(d['trace'])}점" if not outside else f"{len(outside)}점 밖")

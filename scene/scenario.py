@@ -151,7 +151,10 @@ def perturb(
 
         entries = [(product, base_yaw, 0.0) for _ in range(n)]
         fallen = False
-        if rng.random() < spec.p_fallen:
+        # 넘어짐은 서 있는 것(높이 > 밑면 최대변)만. 납작한 것(스펀지·바나나)을 90° 세우면 모서리로 서는 불안정 자세라
+        # 물리 시작과 함께 쓰러져 계획과 다른 자세가 된다 (스펀지 파지가 그래서 헛잡았다)
+        dx_, dy_, dz_ = product["dims"]
+        if dz_ > max(dx_, dy_) and rng.random() < spec.p_fallen:
             entries[0] = (product, base_yaw + rng.uniform(-spec.jitter_deg, spec.jitter_deg), FALLEN_PITCH)
             fallen = True
         jitter = rng.random() < spec.p_jitter
@@ -408,7 +411,8 @@ def generate(
             # 통로 방향 폭 = 진열대 로컬 y 폭. 진열대 회전이 90° 배수라 월드 AABB 에서 바로 읽는다
             along = 1 if unit_normal(unit)[0] else 0
             width_along = hi[along] - lo[along]
-            pose["graspable"] = width_along <= ROBOT.graspable_width()
+            # 손 몸통이 손끝 위아래로 4 cm 나와 선반 위 5.5 cm 아래로는 못 잡는다. 납작한 것(포크·나이프·바나나)은 뺀다 — 위에서 집는 건 다음
+            pose["graspable"] = width_along <= ROBOT.graspable_width() and (hi[2] - lo[2]) >= ROBOT.grasp_min_height
             pose["grasp_width_m"] = round(width_along, 4)
             candidates.append(
                 {
