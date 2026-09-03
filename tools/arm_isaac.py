@@ -32,15 +32,16 @@ from scene.constants import ROBOT, RobotSpec
 
 # Franka 접힘 자세 [설계]. 손이 베이스 위로 올라와 본체 바닥 사각형 밖으로 안 나간다 (FK 로 확인해 로그에 남긴다)
 TUCK = np.array([0.0, -1.70, 0.0, -2.90, 0.0, 1.25, 0.785])
-FINGER_OPEN, FINGER_CLOSED = 0.04, 0.0
-FINGER_FRICTION = float(os.environ.get("ARM_FRICTION", "1.0"))    # [설계] 손가락 패드 마찰 (고무)
-FINGER_MASS = float(os.environ.get("ARM_FINGER_MASS", "0"))        # [설계] 0 이면 에셋값(14 g). 상품(0.4 kg)과 질량비가 커서 접촉 솔버가 흔들린다
-SOLVER_ITERS = int(os.environ.get("ARM_SOLVER_ITERS", "0"))        # [설계] 0 이면 기본
+FINGER_OPEN, FINGER_CLOSED = 0.04, 0.005   # 완전 0 으로 닫으면 헛잡았을 때 손가락끼리 겹쳐 폭주한다
+FINGER_FRICTION = float(os.environ.get("ARM_FRICTION", "1.5"))    # [설계] 손가락 패드 마찰 (고무)
+FINGER_MASS = float(os.environ.get("ARM_FINGER_MASS", "0.05"))        # [설계] 0 이면 에셋값(14 g). 상품(0.4 kg)과 질량비가 커서 접촉 솔버가 흔들린다
+SOLVER_ITERS = int(os.environ.get("ARM_SOLVER_ITERS", "16"))        # [설계] 0 이면 기본
 CARRY_SLOW = float(os.environ.get("ARM_CARRY_SLOW", "1.0"))        # [설계] 카레 구간 시간 배율
+CARRY_FLAT = os.environ.get("ARM_CARRY_FLAT", "1") == "1"            # [설계] 카레 중 손을 수평 유지 (아래로 돌리면 둥근 캔이 빠졌다)
 ARM_GAIN_SCALE = 4.0                   # [설계] 관절 드라이브 강성 배율 (감쇠는 √배)
 GRIP_STIFFNESS, GRIP_DAMPING, GRIP_MAX_FORCE = 5000.0, 200.0, 70.0   # [표준] Franka Hand 연속 파지력 70 N. 강성은 3 cm 오차에서 포화하게
-BIN_SIZE = (0.18, 0.44, 0.20)          # [설계] 상판 뒤쪽 바구니 (x 전후, y 좌우, z 높이), 벽 1 cm. 15 cm 벽은 병이 튀어 넘었다
-BIN_DX = -0.29                         # [설계] 본체 중심 기준 바구니 중심 x → x ∈ [-0.38, -0.20], 상판 뒤끝 -0.385 안, Franka 베이스(-0.174) 앞
+BIN_SIZE = (0.30, 0.44, 0.20)          # [설계] 상판 뒤쪽 바구니 (x 전후, y 좌우, z 높이), 벽 1 cm. 15 cm 벽은 병이 튀어 넘었다
+BIN_DX = -0.33                         # [설계] 본체 중심 기준 바구니 중심 x → x ∈ [-0.48, -0.18]: 상판 뒤끝(-0.385) 밖으로 10 cm 걸침, Franka 베이스(-0.174) 앞
 
 
 def quat_wxyz_from_axes(x, y, z) -> np.ndarray:
@@ -128,6 +129,15 @@ class Arm:
         self.gripper(FINGER_OPEN)
         pos, _ = self.ik.compute_forward_kinematics("right_gripper", TUCK)
         self.tuck_tcp = [round(float(v), 3) for v in pos]      # 베이스 기준. 본체 사각형 안인지 로그로 확인
+        # 바구니 위 자세를 베이스 기준으로 미리 풀어 둔다 (카레 직선 IK 가 실패할 때 관절 보간 폴백용)
+        s = self.spec
+        over_local = np.array([BIN_DX - s.arm_base_dx, -s.arm_mount_dy, s.spawn_z + self.bin_local[2] + 0.30 - s.arm_base_dz])
+        self.ik.set_robot_base_pose(np.zeros(3), np.array([1.0, 0, 0, 0]))
+        q_flat = quat_wxyz_from_axes(np.cross([1.0, 0, 0], [0, 1.0, 0]), [1.0, 0, 0], [0, 1.0, 0])   # 손 z = 왼쪽, 손가락 축 = 전방
+        sol, ok = self.ik.compute_inverse_kinematics("right_gripper", over_local, q_flat, warm_start=TUCK, position_tolerance=0.003, orientation_tolerance=0.05)
+        fk, _ = self.ik.compute_forward_kinematics("right_gripper", sol)
+        self.q_over_flat = sol if (ok or np.linalg.norm(np.asarray(fk) - over_local) < 0.01) else None
+        self.over_local_err = round(float(np.linalg.norm(np.asarray(fk) - over_local)), 4)
 
     def _bin(self, robot_path: str) -> None:
         """Carter 상판 뒤에 바구니. chassis_link 의 자식이라 강체에 붙어 같이 움직인다."""
@@ -166,6 +176,21 @@ class Arm:
         p, q = self.base_pose(x, y, yaw)
         self.art.set_world_poses(positions=[p], orientations=[q])
         self.ik.set_robot_base_pose(p, q)
+
+    def current_aabb(self, prim_path: str, rigid) -> tuple[np.ndarray, np.ndarray]:
+        """상품의 현재 월드 AABB: 에셋 로컬 extent 상자 꼭짓점을 현재 자세로 돌린다 (BBoxCache 와 같은 방식)."""
+        if not hasattr(self, "_local_box"):
+            self._local_box = {}
+        if prim_path not in self._local_box:
+            cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+            r = cache.ComputeUntransformedBound(self.stage.GetPrimAtPath(prim_path)).ComputeAlignedRange()   # 프림 자체 xform 제외
+            lo, hi = np.array(r.GetMin()), np.array(r.GetMax())
+            self._local_box[prim_path] = np.array([[x, y, z] for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+        p, q = rigid.get_world_poses()
+        p, q = p.numpy()[0], q.numpy()[0]
+        R = Rotation.from_quat(np.r_[q[1:], q[0]]).as_matrix()
+        pts = self._local_box[prim_path] @ R.T + p
+        return pts.min(axis=0), pts.max(axis=0)
 
     def gripper(self, opening: float) -> None:
         self.art.set_dof_position_targets([opening, opening], dof_indices=self.finger_idx)
@@ -256,8 +281,13 @@ class Arm:
         n = np.array(line["approach_dir"], dtype=float)           # 통로 → 진열대 (안쪽)
         _, _, yaw = self.base
         fwd = np.array([math.cos(yaw), math.sin(yaw), 0.0])       # 통로 방향 = 손가락이 닫히는 축
-        lo, hi = np.array(line["item_aabb"][0]), np.array(line["item_aabb"][1])
+        # 인식 대용: 계획(JSON) 좌표가 아니라 지금 상품의 자세로 AABB 를 다시 잡는다. 물리 시작 때 넘어지거나
+        # 밀린 상품이 있다 (세정제가 그랬다). 실제 로봇은 카메라로 이걸 본다
+        item = RigidPrim(line["prim"])
+        lo, hi = self.current_aabb(line["prim"], item)
+        planned = (np.array(line["item_aabb"][0]) + np.array(line["item_aabb"][1])) / 2
         c = (lo + hi) / 2
+        res_moved = float(np.linalg.norm(c - planned))
         ext_n = float(abs(np.dot(hi - lo, n)))                    # 진열대 깊이 방향 크기
         front = c - n * ext_n / 2
         # 손끝(TCP)을 상품 중심보다 1 cm 뒤에: 패드(길이 ~2 cm)의 가운데가 중심에 온다. 캔처럼 둥근 것을
@@ -270,11 +300,16 @@ class Arm:
         quat_ref = [quat]                                          # step_phase 가 쓰는 현재 손 방향 (카레 때 아래로 바꾼다)
 
         before = item_poses()
-        item = RigidPrim(line["prim"])
         self.frozen = not os.environ.get("ARM_NO_FREEZE")   # 정차 중 본체 미세 이동을 팔에 전달하지 않는다. 실제 로봇은 브레이크를 잡는다
         z0 = float(item.get_world_poses()[0].numpy()[0][2])
+        width_now = float(abs(np.dot(hi - lo, fwd)))
+        height_now = float(hi[2] - lo[2])
         res = {"phase": "start", "ik_err_max_m": 0.0, "lifted": False, "held_after_retract": False, "in_bin": False,
-               "disturbed_neighbors": 0, "grasp_width_m": line["stop"].get("grasp_width_m")}
+               "disturbed_neighbors": 0, "grasp_width_m": round(width_now, 4), "moved_before_pick_m": round(res_moved, 4)}
+        if width_now > s.gripper_max_w - 0.005 or height_now < s.grasp_min_height or res_moved > 0.10:
+            # 계획 때와 다른 자세 (넘어짐 등) — 지금 파지 규칙으로는 못 집는다. 인식이 있었다면 여기서 다른 파지를 골랐을 것
+            res["phase"] = "not_graspable_now"
+            return res
 
         def ev(name):
             if on_event:
@@ -303,11 +338,15 @@ class Arm:
                 res["phase"] = "to_pre_ik_fail"
                 self.go_tuck(1.5, tick, dt)
                 return res
+            # 지금 자세(선반 근처에서 멈춘)에서 바로 관절 보간하면 팔꿈치가 선반을 스친다. tuck 으로 접었다가 간다
+            self.go_tuck(1.0, tick, dt)
             q_now = self.joints()
             nn = int(2.0 / dt)
             for i in range(1, nn + 1):
                 self.art.set_dof_position_targets(q_now + (sol - q_now) * i / nn, dof_indices=self.arm_idx)
                 tick()
+            self.hold(0.3, tick, dt)
+            res["pre_err_fallback_m"] = round(float(np.linalg.norm(self.tcp() - pre)), 4)
         self.hold(0.3, tick, dt)
         res["pre_err_m"] = round(float(np.linalg.norm(self.tcp() - pre)), 4)       # 팔이 실제로 따라왔나
         ev("pre")
@@ -322,6 +361,8 @@ class Arm:
         fingers = self.art.get_dof_positions().numpy()[0][self.finger_idx]
         res["finger_gap_m"] = round(float(fingers.sum()), 4)          # 닫힌 뒤 손가락 사이 = 잡은 폭. 0 이면 헛잡음
         offset0 = item.get_world_poses()[0].numpy()[0] - self.tcp()
+        dist0 = float(np.linalg.norm(offset0))
+        gap0 = res["finger_gap_m"]
         ev("grasp")
         lift = grasp + np.array([0, 0, 0.04])
         if not step_phase("lift", grasp, lift, 0.6 * CARRY_SLOW):
@@ -350,12 +391,23 @@ class Arm:
         quat_down = quat_wxyz_from_axes(np.cross(fwd, [0, 0, -1.0]), fwd, [0, 0, -1.0])   # 손 아래, 손가락 축은 통로 방향
         high = np.array([out[0], out[1], max(out[2] + 0.10, bin_c[2] + 0.30)])
         over = np.array([bin_c[0], bin_c[1], bin_c[2] + 0.30])      # 베이스 위 +0.29: IK 가 확실히 풀리는 높이 (probe)
-        drop = np.array([bin_c[0], bin_c[1], bin_c[2] + 0.30])      # 잡은 상품 반높이(≤ 10 cm)가 벽(20 cm) 위에 오게
+        drop = np.array([bin_c[0], bin_c[1], bin_c[2] + 0.24])      # 잡은 상품 반높이(≤ 10 cm)가 벽(20 cm) 위에 오게, 낙하는 짧게
         res["phase"] = "carry"
         trace = []
+        held_trace = []
+
+        def held_now(tag):
+            # 손 방향이 바뀌어도 되는 지표: 손끝↔상품 중심 거리 변화 + 손가락 간격 (간격이 좁아지면 빠진 것)
+            ip_ = item.get_world_poses()[0].numpy()[0]
+            held_trace.append((tag, round(float(abs(np.linalg.norm(ip_ - self.tcp()) - dist0)), 3),
+                               round(float(self.art.get_dof_positions().numpy()[0][self.finger_idx].sum()), 3)))
+        held_now("retract")
+        if CARRY_FLAT:
+            quat_down = quat
         # 1) 위로: 방향은 자유 (위치만 맞추는 IK). 수평 자세를 고집하면 어깨 위 구간에서 해가 없다
         ok = self.move_line_pos(out, high, 1.5 * CARRY_SLOW, tick, dt)
         trace.append(round(float(np.linalg.norm(self.tcp() - high)), 3))
+        held_now("up")
         ev("high")
 
         # 2) 바구니 위로: 직선 + 손 방향 slerp(수평 → 아래). high 와 over 모두 본체 위 공간이라 사이에 장애물이 없다.
@@ -367,11 +419,24 @@ class Arm:
             res["ik_err_max_m"] = round(max(res["ik_err_max_m"], err), 4)
             self.hold(0.4, tick, dt)
             quat_ref[0] = quat_down
+            if (not ok or np.linalg.norm(self.tcp() - over) > 0.05) and CARRY_FLAT and self.q_over_flat is not None:
+                # 직선 IK 가 막히면 미리 풀어 둔 바구니 위 관절 자세로 보간 (본체 위 공간, 장애물 없음)
+                res["carry_over_fallback"] = True
+                q0 = self.joints()
+                nn = int(2.0 * CARRY_SLOW / dt)
+                for i in range(1, nn + 1):
+                    self.art.set_dof_position_targets(q0 + (self.q_over_flat - q0) * i / nn, dof_indices=self.arm_idx)
+                    tick()
+                self.hold(0.3, tick, dt)
+                ok = True
         trace.append(round(float(np.linalg.norm(self.tcp() - over)), 3))
+        held_now("over")
         ev("over")
         # 3) 내리기
         ok = ok and step_phase("carry_down", over, drop, 0.8)
+        held_now("down")
         res["carry_trace_err_m"] = trace
+        res["held_trace"] = held_trace
         self.hold(0.3, tick, dt)
         reached = float(np.linalg.norm(self.tcp() - drop))
         res["carry_err_m"] = round(reached, 4)
@@ -383,6 +448,10 @@ class Arm:
             self.go_tuck(1.5, tick, dt)
             return res
         res["phase"] = "release"
+        # 두 단계로 놓는다: 70 N 으로 눌린 캔은 손가락을 한 번에 벌리면 튕겨 나간다 (스팸 캔이 바구니 벽을 넘어갔다)
+        gap_now = float(self.art.get_dof_positions().numpy()[0][self.finger_idx].sum())
+        self.gripper(gap_now / 2 + 0.006)
+        self.hold(0.4, tick, dt)
         self.gripper(FINGER_OPEN)
         self.hold(1.0, tick, dt)
         ip = item.get_world_poses()[0].numpy()[0]
@@ -399,5 +468,6 @@ class Arm:
         res["disturbed_neighbors"] = sum(1 for k, p in after.items() if k != line["prim"] and k in before
                                          and np.linalg.norm(np.asarray(p) - np.asarray(before[k])) > 0.02)
         res["phase"] = "done"
+        res["held_through_carry"] = bool(all(g >= gap0 - 0.01 for _, _, g in held_trace))
         res["success"] = bool(res["lifted"] and res["in_bin"])
         return res

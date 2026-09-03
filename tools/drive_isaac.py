@@ -115,7 +115,7 @@ app.update()
 if arm:
     arm.start()
     arm.follow(dock["x"], dock["y"], math.radians(dock["yaw_deg"]))
-    print(f"팔: Franka 베이스 {ROBOT.arm_base_dz:.3f} m, 어깨 {ROBOT.arm_mount_z():.2f} m, tuck 손끝(베이스 기준) {arm.tuck_tcp}")
+    print(f"팔: Franka 베이스 {ROBOT.arm_base_dz:.3f} m, 어깨 {ROBOT.arm_mount_z():.2f} m, tuck 손끝(베이스 기준) {arm.tuck_tcp}, 바구니 위 자세 IK 오차 {arm.over_local_err * 1000:.0f} mm")
 # 바퀴는 속도 드라이브: 강성 0, 감쇠는 에셋 값이 작으면 올린다
 st, dp = robot.get_dof_gains()
 wi = robot._resolve_wheel_dof_indices()
@@ -381,7 +381,7 @@ for i, wp in enumerate(waypoints[1:], 1):
             g = arm.pick(line, item_poses, tick, args.dt, on_event=on_event)
             BRAKE[0] = False
             picks[-1]["grasp"] = g
-            print(f"      파지 {'성공' if g.get('success') else '실패'}  단계 {g['phase']}  손가락 간격 {g.get('finger_gap_m', 0) * 100:.1f} cm (폭 {g.get('grasp_width_m', 0) * 100:.1f})  들림 {g.get('lift_m', 0) * 100:.1f} cm  잡음 {g['held_after_retract']}  바구니 {g['in_bin']}  이웃 교란 {g['disturbed_neighbors']}  IK 오차 {g['ik_err_max_m'] * 1000:.0f} mm")
+            print(f"      파지 {'성공' if g.get('success') else '실패'}  단계 {g['phase']}  계획 대비 이동 {g.get('moved_before_pick_m', 0) * 100:.1f} cm  손가락 간격 {g.get('finger_gap_m', 0) * 100:.1f} cm (폭 {g.get('grasp_width_m', 0) * 100:.1f})  들림 {g.get('lift_m', 0) * 100:.1f} cm  잡음 {g['held_after_retract']}  바구니 {g['in_bin']}  이웃 교란 {g['disturbed_neighbors']}  IK 오차 {g['ik_err_max_m'] * 1000:.0f} mm")
         else:
             tick(int(args.dwell / args.dt))
     elif i % 3 == 0:
