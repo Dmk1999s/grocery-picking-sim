@@ -294,6 +294,11 @@ class RobotSpec:
 
     safety_margin: float = 0.15  # [설계] 장애물과 유지할 편측 여유 (내비게이션 inflation)
 
+    # 피킹 자세 — scenario.py 가 정차 위치와 도달 가능성을 이걸로 계산한다.
+    # 팔은 본체 왼쪽(+Y) 마운트에 있고, 정차할 때 왼쪽이 진열대를 본다.
+    arm_reach: float = 0.85      # [잠정] 마운트에서 그리퍼 끝까지 도달 반경 (UR5e 급 850 mm)
+    pick_standoff: float = 0.20  # [설계] 정차 시 본체 측면과 진열대 앞면 사이 거리
+
     def turn_radius(self) -> float:
         """제자리 회전 시 필요한 반경 (차동구동 가정)."""
         return ((self.base_w / 2) ** 2 + (self.base_l / 2) ** 2) ** 0.5
@@ -320,7 +325,26 @@ class PhysicsSpec:
     restitution: float = 0.01    # [설계] 거의 튀지 않게
 
 
+# ─────────────────────────────────────────────────────────────
+# 시나리오 — 트윈에서 '어느 날의 매장'으로 흔드는 정도
+# ─────────────────────────────────────────────────────────────
+# 전부 [설계]. 실측 매장을 며칠 관찰하면 빈 자리·넘어짐·오배치 빈도를 재서
+# 바꾼다 (docs/SURVEY.md). 확률은 슬롯(한 칸의 앞뒤 열) 단위다.
+@dataclass(frozen=True)
+class ScenarioSpec:
+    fill: float = 0.85           # [설계] 슬롯이 채워질 확률 → 빈 자리 15 %
+    p_jitter: float = 0.30       # [설계] yaw 가 흔들린 슬롯 비율
+    jitter_deg: float = 15.0     # [설계] yaw 흔들림 최대 (±)
+    p_fallen: float = 0.02       # [설계] 맨 앞 상품이 앞으로 넘어진 슬롯 비율
+    p_misplaced: float = 0.03    # [설계] 다른 품목군 상품이 잘못 놓인 슬롯 비율
+    light_scale: tuple[float, float] = (0.6, 1.2)  # [설계] 통로 조명 세기 배율 범위
+    p_light_off: float = 0.10    # [설계] 등 하나가 꺼져 있을 확률
+    n_orders: int = 5            # [설계] 주문 건수
+    lines_per_order: int = 4     # [설계] 주문 한 건의 품목 수
+
+
 SHELF = ShelfSpec()
 STORE = StoreSpec()
 ROBOT = RobotSpec()
 PHYSICS = PhysicsSpec()
+SCENARIO = ScenarioSpec()

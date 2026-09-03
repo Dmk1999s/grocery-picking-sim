@@ -91,7 +91,7 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 - **모델링하지 않고 스캔 데이터셋을 쓴다.** YCB 구글 스캔 메시 85개를 받아 USD 로 바꾸고, 그중 마트에서 팔 만한 32종(캔·박스·병·과일·생활용품·주방·문구·완구·스포츠)만 쓴다
 - 에셋마다 **치수는 메시에서, 질량은 YCB 논문 표에서** 가져와 강체·볼록껍질 콜라이더와 함께 붙인다. 선반 위에 놓으면 그대로 물리가 돈다
 - **진열 관행대로 채운다.** 통로마다 품목군(플래노그램), 같은 상품을 옆으로 이어 붙이고(페이싱), 앞뒤로 여러 개 세운다
-- **트윈과 시나리오가 같은 코드다.** seed 없이 돌리면 결정적 배치, seed 를 주면 상품 순서·빈 자리가 흔들린다
+- **트윈과 시나리오가 같은 코드다.** seed 없이 돌리면 결정적 배치, seed 를 주면 상품 순서·빈 자리가 흔들린다. 그 위에 `scenario.py` 가 넘어짐·오배치·조명을 얹는다 (아래)
 - 인스턴싱으로 같은 상품 수천 개가 메시 하나를 공유한다. 9,864개를 올려도 렌더가 2~3분
 
 ### 매장 (대형마트 식품 매장 한 층의 일부)
@@ -122,15 +122,35 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 - 매장 좌표 원점은 **바닥 모서리** — 실측 때 벽 모서리에서 재는 것과 같다
 - 프림 이름이 곧 작업 지시 단위: `/World/Shelves/Aisle_00/L/Unit_02` = 부통로 0 왼쪽 면 세 번째 진열대
 
+### 시나리오 (seed 하나 = 어느 날의 매장 + 피킹 주문)
+
+<p align="center">
+  <img src="docs/img/scenario_plan.png" width="720" alt="시나리오 평면도 — 주문 경로와 정차·파지 위치">
+  <br>
+  <sub>seed 7. 주문 5건의 경로(색), 정차 위치(번호 = 방문 순서), 정차점에서 상품 중심으로 팔이 들어가는 선. × 넘어진 상품, ▲ 오배치, 회색 실선 = 꺼진 등. 주통로 주행선은 기둥을 피해 잡는다</sub>
+</p>
+
+트윈은 플래노그램대로 꽉 찬 이상적인 매장이다. 학습·평가에는 "어느 날의 매장"이 필요하고, 그건 재현 가능해야 한다. `scene/scenario.py` 는 seed 하나로 아래 전부를 결정하고 USD + JSON 으로 낸다.
+
+| | 무엇을 | 어떻게 |
+|---|---|---|
+| 매장 상태 | 빈 자리 15 %, yaw 흔들림(±15°), 앞으로 넘어진 상품, 다른 통로 상품이 잘못 놓인 자리, 통로별 조명 세기·꺼진 등 | `stock.plan(seed)` 위에 슬롯(앞뒤 열) 단위로. 회전한 상품이 슬롯에 안 들어가거나 뒤 상품과 겹치면 그 흔들림만 포기 → 물리 검증(verify_stock 7항목)을 그대로 통과한다 |
+| 피킹 주문 | 주문 N건 × 품목 M개 | 각 품목은 매장 안 **실제 프림 하나**를 가리킨다. 정답은 USD 의 `stock:*` 속성 — 오배치 상품도 라벨은 실제 상품이라 "플래노그램은 A, 실제는 B" 를 검출기가 맞혀야 한다 |
+| 로봇 작업 | 품목마다 정차 자세 (x, y, yaw) · 팔 마운트 · 파지 대상(월드 좌표, 진입 방향) · 도달 거리 | 진열대 앞면에서 `pick_standoff` 만큼 떨어져 왼쪽(팔)이 진열대를 보게 선다. 상품 좌표는 constants 가 아니라 **방금 쓴 USD 를 되읽어** 잡는다 |
+| 경로 | 도크 → 정차들 → 도크 경유점, 길이 | 부통로 중심선 + 주통로 주행선 그래프. 방문 순서는 탐욕 최근접 (최적 아님, 로봇 쪽에서 바꿔도 된다) |
+
+**팔 도달이 설계를 돌려 말한다.** 마운트 0.35 m · 도달 0.85 m (UR5e 급) 이면 맨 앞 상품 3,100개 중 도달 가능한 것이 1,774개 (57 %) 다. 3단(1.16 m) 이상은 전부 못 닿는다. 주문은 도달 가능한 상품에서만 뽑되 이 수치를 통계로 남긴다 — 팔을 높이 올리거나(리프트) 더 긴 팔을 쓰라는 근거가 된다.
+
 ## 검증
 
-생성할 때마다 자동으로 147항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
+생성할 때마다 자동으로 165항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
 
 | 검증기 | 항목 수 | 보는 것 |
 |---|---|---|
 | `tools/verify_shelf.py` | 58 | 외형 치수, 지주 위치·측면 개방, 단별 높이·두께·앞단 위치, 레일, 홀 피치 스냅, 콜라이더, 슬롯 내부 여부, 대표 상품(캔·크래커·병) 적합성 |
 | `tools/verify_store.py` | 82 | 바닥·천장·벽·기둥·조명, 진열대 대수·높이·바닥 접촉·벽 내부, 상호 겹침(137대 쌍 검사), 기둥 간섭, 앞면이 통로 경계에 있는지, **AMR 직진 여유폭 · 제자리 회전 · 통로 입구 회전 가능성** (통로 10개 × 입구 16곳) |
 | `tools/verify_stock.py` | 7 | 상품 9,864개 전부: 참조가 풀려 메시가 있는지, 강체·콜라이더·질량, 밑면이 선반에 닿는지(±2 mm), 자기 슬롯 안(폭·깊이·높이)인지, 같은 진열대 안 겹침, 메타데이터 중복 |
+| `tools/verify_scenario.py` | 18 | 시나리오 JSON ↔ USD: 주문 품목의 프림·라벨 일치, 맨 앞 상품인지, 파지 좌표 = USD AABB 중심, **팔 도달**, 정차 본체+안전여유가 장애물과 안 겹침, 본체 ↔ 앞면 간격 = standoff, 경로 띠가 장애물과 안 겹침, 흔들림 라벨(오배치는 다른 품목군, 넘어짐은 rotateY −90)·조명 값·개수 통계, **같은 seed 재생성 시 JSON 동일** |
 
 통행 검사는 상수가 아니라 USD 안의 실제 형상으로 한다. 기둥·엔드캡·가격표 레일이 통로로 튀어나온 만큼을 전부 반영한 뒤, AMR 본체 + 안전 여유가 들어가는지 본다.
 
@@ -150,7 +170,9 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 | `scene/stock.py` | ✅ | 상품 배치: 플래노그램·페이싱·앞뒤 세우기, seed 시나리오, 인스턴싱 |
 | `tools/verify_stock.py` | ✅ | 상품 배치 검증 |
 | 실측 | ⬜ | `docs/SURVEY.md` 절차대로 통로 1~2개 |
-| `scene/scenario.py` | ⬜ | seed 기반 시나리오 생성 |
+| `scene/scenario.py` | ✅ | seed → 매장 상태(빈 자리·yaw·넘어짐·오배치·조명) + 피킹 주문 + 정차·파지·경로 JSON |
+| `tools/verify_scenario.py` | ✅ | 시나리오 검증 18항목 (도달·정차·경로·재현성) |
+| `tools/plan_scenario.py` | ✅ | 시나리오 평면도 (경로·정차·흔들림 오버레이) |
 | 로봇 | ⬜ | AMR + 단일 팔, Isaac Sim 주행·검출·파지 |
 
 ## 쓰는 법
@@ -170,8 +192,14 @@ python3 -m venv .venv && .venv/bin/pip install usd-core matplotlib   # matplotli
 aws s3 sync --no-sign-request --exclude "*" --include "*_google_16k.tgz" s3://ycb-benchmarks/data/google/ assets/ycb/raw/
 .venv/bin/python -m tools.ycb_catalog
 .venv/bin/python -m scene.stock --store out/store.usda --out out/store_stocked.usda   # 트윈 (결정적)
-.venv/bin/python -m scene.stock --seed 7 --fill 0.7 --out out/scenario_007.usda      # 시나리오
+.venv/bin/python -m scene.stock --seed 7 --fill 0.7 --out out/stock_seed007.usda     # 상품만 흔든 버전
 .venv/bin/python -m tools.verify_stock out/store_stocked.usda
+
+# 시나리오: seed → 매장 상태 + 주문 + 정차·경로 (USD + JSON) → 검증 → 평면도
+.venv/bin/python -m scene.scenario --seed 7 --orders 5 --lines 4      # out/scenario_007.usda + .json
+.venv/bin/python -m tools.verify_stock out/scenario_007.usda            # 흔들린 상태도 물리적으로 말이 되는지
+.venv/bin/python -m tools.verify_scenario out/scenario_007.json         # 18항목 (재생성 비교 포함, ~10 s)
+.venv/bin/python -m tools.plan_scenario out/scenario_007.json           # → out/scenario_007_plan.png
 ```
 
 Isaac Sim은 `out/store_stocked.usda`를 스테이지에 얹기만 하면 된다. 실제 렌더는 Isaac Sim 파이썬으로:
@@ -193,8 +221,8 @@ bash tools/view_isaac.sh out/store_stocked.usda     # EC2 에서. TCP 49100 / UD
 
 1. **실측** — 마트 한 곳에서 부통로 1~2개. 타일·상품을 자로 쓰는 절차는 `docs/SURVEY.md`
 2. **상품 확장** — YCB 는 마트 상품이 32종뿐이라 통로가 단조롭다. Google Scanned Objects 로 넓힌다
-3. **`scenario.py`** — 가림·기울어짐·조명 변화를 seed 하나로 재현 (stock 의 seed 모드 위에)
-4. **Isaac Sim** — AMR 주행 → 상품 검출 → 파지 → 회수
+3. ~~**`scenario.py`**~~ — 완료. 다음은 가림(앞 상품이 뒤 상품을 가리는 배치)·기울어짐(90° 가 아닌 각) 추가
+4. **Isaac Sim** — `scenario_NNN.json` 의 정차 자세로 AMR 주행 → 상품 검출 → 파지 → 회수. 팔 마운트 높이·도달은 시나리오 통계(도달 57 %)로 정한다
 5. **μ 스윕** — 선반·그리퍼 마찰계수는 실측 불가능한 값이라 하나로 고정하지 않고 스윕 축으로 둔다
 
 ## 레포 구조
@@ -205,9 +233,12 @@ scene/
   shelf.py        진열대 생성기 + 슬롯 좌표
   store.py        매장 생성기 + 배치·통로 계산
   stock.py        상품 배치 (플래노그램 · seed 시나리오)
+  scenario.py     시나리오: seed → 매장 상태 + 주문 + 정차·파지·경로 JSON
 tools/
   ycb_catalog.py  YCB 메시 → USD 에셋 + 카탈로그
   verify_stock.py 상품 배치 검증
+  verify_scenario.py 시나리오 검증 (도달·정차·경로·재현성)
+  plan_scenario.py   시나리오 평면도 (경로 오버레이)
   verify_shelf.py 진열대 검증
   verify_store.py 매장 검증 + AMR 통행
   plan_store.py   평면도 렌더

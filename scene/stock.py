@@ -152,13 +152,18 @@ def build_stock(out: Path, store_usd: Path, items: list[dict], *, asset_root: Pa
         prim.GetReferences().AddReference(str(asset_rel))
         prim.SetInstanceable(True)
         xf.AddTranslateOp().Set(Gf.Vec3d(it["x"], it["y"], it["z"]))
+        # xformOp 순서 [translate, rotateZ, rotateY] = 점에 rotateY(넘어짐) → rotateZ(yaw) → 이동
         if it["yaw"]:
             xf.AddRotateZOp().Set(it["yaw"])
-        # 검증·로봇 작업 지시용 메타데이터
+        if it.get("pitch"):
+            xf.AddRotateYOp().Set(it["pitch"])
+        # 검증·로봇 작업 지시용 메타데이터 (정답 라벨)
         prim.CreateAttribute("stock:product", Sdf.ValueTypeNames.String).Set(it["product"]["name"])
         prim.CreateAttribute("stock:level", Sdf.ValueTypeNames.Int).Set(it["slot"]["level"])
         prim.CreateAttribute("stock:slot", Sdf.ValueTypeNames.Int).Set(it["slot"]["index"])
         prim.CreateAttribute("stock:facing", Sdf.ValueTypeNames.Int).Set(it["k"])
+        prim.CreateAttribute("stock:state", Sdf.ValueTypeNames.String).Set(it.get("state", "upright"))
+        prim.CreateAttribute("stock:misplaced", Sdf.ValueTypeNames.Bool).Set(bool(it.get("misplaced", False)))
     stage.GetRootLayer().Save()
     return stage
 

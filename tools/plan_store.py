@@ -33,17 +33,12 @@ from tools.verify_shelf import world_bbox
 COLORS = {"wall": "#4a6fa5", "gondola": "#c97b3a", "endcap": "#b23a48"}
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("usd", nargs="?", default="out/store.usda")
-    ap.add_argument("--out", default="out/store_plan.png")
-    args = ap.parse_args()
+def draw_store(ax, stage: Usd.Stage, cache: UsdGeom.BBoxCache, *, robot_marker: bool = True, light_scale: dict | None = None) -> tuple[float, float]:
+    """매장 평면 요소를 ax 에 그린다. plan_scenario 가 같은 바탕 위에 경로를 얹는다.
 
-    stage = Usd.Stage.Open(args.usd)
-    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    light_scale: 조명 프림 경로 → 세기 배율. 주면 꺼진 등(0) 은 회색 실선으로 그린다.
+    """
     lx, ly = STORE.footprint(SHELF)
-
-    fig, ax = plt.subplots(figsize=(6, 6 * ly / lx + 1))
     ax.set_aspect("equal")
 
     # 타일 격자
@@ -80,20 +75,38 @@ def main() -> None:
         lo, hi = world_bbox(cache, prim)
         ax.add_patch(Rectangle((lo[0], lo[1]), hi[0] - lo[0], hi[1] - lo[1], fc="#888", zorder=5))
 
-    # 조명 (점선)
+    # 조명 (점선). 시나리오에서 꺼진 등은 회색 실선
     for prim in stage.GetPrimAtPath("/World/Store/Lights").GetChildren():
         lo, hi = world_bbox(cache, prim)
-        ax.add_patch(Rectangle((lo[0], lo[1]), hi[0] - lo[0], hi[1] - lo[1], fc="none", ec="#e6b800", ls="--", lw=0.8, zorder=6))
+        off = light_scale is not None and light_scale.get(str(prim.GetPath()), 1.0) == 0
+        ax.add_patch(Rectangle((lo[0], lo[1]), hi[0] - lo[0], hi[1] - lo[1], fc="none",
+                               ec="#999" if off else "#e6b800", ls="-" if off else "--", lw=1.2 if off else 0.8, zorder=6))
 
     # AMR 크기 비교용
-    r = ROBOT
-    ax.add_patch(Rectangle((STORE.aisle_x_range(0, SHELF)[0] + (STORE.aisle_width - r.base_w) / 2, ly / 2 - r.base_l / 2),
-                           r.base_w, r.base_l, fc="#6c6", ec="k", lw=0.6, zorder=7))
+    if robot_marker:
+        r = ROBOT
+        ax.add_patch(Rectangle((STORE.aisle_x_range(0, SHELF)[0] + (STORE.aisle_width - r.base_w) / 2, ly / 2 - r.base_l / 2),
+                               r.base_w, r.base_l, fc="#6c6", ec="k", lw=0.6, zorder=7))
 
     ax.set_xlim(-STORE.wall_t - 0.2, lx + STORE.wall_t + 0.2)
     ax.set_ylim(-STORE.wall_t - 0.2, ly + STORE.wall_t + 0.2)
     ax.set_xlabel("x [m]"); ax.set_ylabel("y [m]")
-    ax.set_title(f"{Path(args.usd).name}  {lx:.1f} × {ly:.1f} m  (타일 {t * 100:.0f} cm)", fontsize=9)
+    return lx, ly
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("usd", nargs="?", default="out/store.usda")
+    ap.add_argument("--out", default="out/store_plan.png")
+    args = ap.parse_args()
+
+    stage = Usd.Stage.Open(args.usd)
+    cache = UsdGeom.BBoxCache(Usd.TimeCode.Default(), [UsdGeom.Tokens.default_])
+    lx, ly = STORE.footprint(SHELF)
+
+    fig, ax = plt.subplots(figsize=(6, 6 * ly / lx + 1))
+    draw_store(ax, stage, cache)
+    ax.set_title(f"{Path(args.usd).name}  {lx:.1f} × {ly:.1f} m  (타일 {STORE.tile * 100:.0f} cm)", fontsize=9)
     fig.tight_layout()
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(args.out, dpi=130)
