@@ -40,6 +40,7 @@ ap.add_argument("--gif-frames", type=int, default=120, help="GIF 최대 프레�
 ap.add_argument("--dwell", type=float, default=1.5, help="정차점에서 머무는 시간 s (팔 없을 때)")
 ap.add_argument("--perceive", action="store_true", help="정차 후 헤드 카메라로 대상 상자를 추정해 그걸로 집는다 (참값 대신). 데이터셋도 남긴다")
 ap.add_argument("--detector", default=None, help="YOLO 가중치(.pt). 주면 정답 마스크 대신 검출기 박스 + 깊이로 상자를 추정한다 (--perceive 와 함께)")
+ap.add_argument("--localize", action="store_true", help="라이다 + 매장 지도 + 파티클 필터로 위치를 추정해 그걸로 주행한다 (참값 대신)")
 ap.add_argument("--teleport", action="store_true", help="주행 없이 정차 자세로 순간이동 (파지 실험용)")
 ap.add_argument("--arm", action="store_true", help="Carter 위에 Franka 를 얹고 정차마다 상품을 집어 바구니에 넣는다")
 ap.add_argument("--max-steps", type=int, default=60 * 600, help="안전장치")
@@ -123,6 +124,30 @@ if args.perceive:
     if not args.record:
         import omni.replicator.core as rep
         rep.create.light(light_type="dome", intensity=1000.0)
+pf = None
+if args.localize:
+    from isaacsim.core.utils.extensions import enable_extension
+    enable_extension("isaacsim.sensors.physx")
+    app.update()
+    import omni.kit.commands
+    from isaacsim.sensors.physx import _range_sensor
+    from tools.localize import ParticleFilter, StoreMap
+    LIDAR_DX, LIDAR_DZ = 0.32, -0.12         # [설계] 본체 앞 범퍼 높이 (chassis 로컬 → 바닥에서 0.135 m). 상판 위(0.7 m)에 두면 빔이 지도의 앞면(데크)이 아니라 안으로 들어간 상단 선반·상품을 맞춰 5~13 cm 치우친다
+    _, lidar_prim = omni.kit.commands.execute(
+        "RangeSensorCreateLidar", path="/Lidar", parent="/World/Robot/chassis_link", min_range=0.15, max_range=20.0,
+        draw_points=False, draw_lines=False, horizontal_fov=270.0, vertical_fov=1.0, horizontal_resolution=1.0,
+        vertical_resolution=1.0, rotation_rate=0.0, high_lod=False, yaw_offset=0.0)
+    lidar_prim.GetPrim().GetAttribute("xformOp:translate").Set(Gf.Vec3d(LIDAR_DX, 0.0, LIDAR_DZ))
+    LIDAR_PATH = "/World/Robot/chassis_link/Lidar"
+    app.update()
+    lidar_if = _range_sensor.acquire_lidar_sensor_interface()
+    store_map = StoreMap()
+    pf = ParticleFilter(store_map, n=500)
+    pf.init_around(dock["x"], dock["y"], math.radians(dock["yaw_deg"]), sxy=0.05, syaw=0.05)   # 도크 위치는 안다
+    loc_err = []
+    odom = [dock["x"], dock["y"], math.radians(dock["yaw_deg"])]     # 순수 오도메트리 적분 (드리프트 확인용)
+    GYRO_RNG = np.random.default_rng(0)
+    print(f"로컬라이제이션: 라이다 270° 1°, 파티클 {pf.n}, 지도 {store_map.nx}×{store_map.ny} 셀")
 if arm:
     arm.start()
     arm.follow(dock["x"], dock["y"], math.radians(dock["yaw_deg"]))
@@ -136,12 +161,20 @@ ctrl = DifferentialController(wheel_radius=ROBOT.wheel_radius, wheel_base=ROBOT.
                               max_linear_speed=ROBOT.v_max, max_angular_speed=ROBOT.w_max)
 
 
-def pose() -> tuple[float, float, float]:
+def true_pose() -> tuple[float, float, float]:
+    """시뮬 참값. 물리적으로 로봇에 붙은 것(팔·카메라·간격 측정·기록)은 이걸 쓴다."""
     p, q = robot.get_world_poses()
     p, q = p.numpy()[0], q.numpy()[0]           # wxyz
     w, x, y, z = q
     yaw = math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))
     return float(p[0]), float(p[1]), yaw
+
+
+def pose() -> tuple[float, float, float]:
+    """주행 제어가 보는 자세. --localize 면 파티클 필터 추정, 아니면 참값."""
+    if pf is not None:
+        return pf.estimate()
+    return true_pose()
 
 
 def wrap(a: float) -> float:
@@ -249,15 +282,18 @@ def step(n: int = 1) -> None:
 
 
 # ── 바퀴 부호 보정: 잠깐 앞으로 굴려 보고 heading 방향으로 갔는지 본다
-x0, y0, yaw0 = pose()
+x0, y0, yaw0 = true_pose()
 robot.apply_wheel_actions(ctrl.forward([0.3, 0.0]))
 step(45)
-x1, y1, _ = pose()
+x1, y1, _ = true_pose()
 moved = (x1 - x0) * math.cos(yaw0) + (y1 - y0) * math.sin(yaw0)
 SIGN = 1.0 if moved >= 0 else -1.0
+# 오도메트리용 바퀴별 부호: 앞으로 굴러가는 동안 각 바퀴 각속도의 부호 (좌우 조인트 축이 거울 대칭이면 반대로 나온다)
+_wv = robot.get_dof_velocities().numpy()[0][wi]
+WHEEL_SIGN = np.array([1.0 if v * SIGN >= 0 else -1.0 for v in _wv])
 robot.apply_wheel_actions([0.0, 0.0])
 step(30)
-print(f"바퀴 부호 보정: 0.75 s 에 {moved:+.3f} m → sign {SIGN:+.0f}")
+print(f"바퀴 부호 보정: 0.75 s 에 {moved:+.3f} m → sign {SIGN:+.0f}, 바퀴별 각속도 부호 {WHEEL_SIGN.tolist()} (각속도 {np.round(_wv, 2).tolist()})")
 # 도크로 되돌린다
 robot.set_world_poses(positions=[[dock["x"], dock["y"], ROBOT.spawn_z]], orientations=[quat_z(dock["yaw_deg"])])
 robot.set_velocities(linear_velocities=[[0.0, 0.0, 0.0]], angular_velocities=[[0.0, 0.0, 0.0]])
@@ -270,6 +306,8 @@ def command(v: float, w: float) -> None:
 
 # ── 경유점 추종
 K_W, K_V = 2.5, 1.2
+ACCEL_MAX = 0.8          # [설계] m/s². 급가속은 바퀴를 미끄러뜨려 오도메트리를 틀어놓는다
+V_CMD = [0.0]
 TOL_POS, TOL_YAW = 0.03, math.radians(2.0)
 sim_t = 0.0
 dist_total = 0.0
@@ -292,9 +330,27 @@ def tick(n: int = 1) -> None:
     step(n)
     steps += n
     sim_t += n * args.dt
-    x, y, yaw = pose()
+    x, y, yaw = true_pose()
     dist_total += math.hypot(x - prev[0], y - prev[1])
     prev = (x, y, yaw)
+    if pf is not None:
+        # 오도메트리: 바퀴 각속도 → v, ω (차동구동). 실제 로봇의 엔코더에 해당
+        wv = robot.get_dof_velocities().numpy()[0][wi] * WHEEL_SIGN * SIGN     # 둘 다 '앞으로 = +'
+        v_od = ROBOT.wheel_radius * (wv[0] + wv[1]) / 2
+        # yaw 각속도는 바퀴가 아니라 자이로에서: 제자리 회전 때 캐스터가 끌려 바퀴 오도메트리 yaw 는 68 m 에 14 m 드리프트했다.
+        # 시뮬 강체 각속도 + 자이로 잡음(0.5°/s) 을 IMU 대용으로 쓴다
+        w_od = float(robot.get_velocities()[1].numpy()[0][2]) + GYRO_RNG.normal(0, math.radians(0.5))
+        pf.predict(v_od, w_od, n * args.dt)
+        odom[2] += w_od * n * args.dt
+        odom[0] += v_od * n * args.dt * math.cos(odom[2]); odom[1] += v_od * n * args.dt * math.sin(odom[2])
+        if steps % 6 == 0:                       # 10 Hz 스캔
+            rng_ = np.asarray(lidar_if.get_linear_depth_data(LIDAR_PATH), dtype=float).ravel()
+            az_ = np.asarray(lidar_if.get_azimuth_data(LIDAR_PATH), dtype=float).ravel()
+            if rng_.size == az_.size and rng_.size > 0:
+                keep = rng_ > 0.5                # 0.5 m 안은 자기 몸(바구니·팔)
+                pf.update(np.where(keep, rng_, 0.0), az_, max_range=20.0, offset=LIDAR_DX)
+            ex, ey, eyaw = pf.estimate()
+            loc_err.append([round(sim_t, 3), round(math.hypot(ex - x, ey - y), 4), round(math.degrees(wrap(eyaw - yaw)), 2), round(ex, 4), round(ey, 4), round(math.hypot(odom[0] - x, odom[1] - y), 4)])
     if steps % 6 == 0:
         c, who = clearance(x, y, yaw)
         if c < min_clear:
@@ -330,8 +386,11 @@ def go_to(tx: float, ty: float) -> None:
             command(0.0, max(-ROBOT.w_max, min(ROBOT.w_max, K_W * e)))
         else:
             v = max(0.08, min(ROBOT.v_max, K_V * d))
+            v = min(v, V_CMD[0] + ACCEL_MAX * args.dt)          # 가속 램프: 출발 때 바퀴 미끄러짐(오도메트리 오차) 줄인다
+            V_CMD[0] = v
             command(v, max(-ROBOT.w_max, min(ROBOT.w_max, K_W * e)))
         tick()
+    V_CMD[0] = 0.0
     command(0.0, 0.0)
     tick(6)
 
@@ -357,7 +416,7 @@ for i, wp in enumerate(waypoints[1:], 1):
         if math.hypot(x - tx, y - ty) > TOL_POS:
             go_to(tx, ty)
             turn_to(math.radians(wp["yaw_deg"]))
-    x, y, yaw = pose()
+    x, y, yaw = true_pose()                     # 정차 오차는 참값으로 잰다 (로컬라이제이션 오차 + 제어 오차)
     err = math.hypot(x - tx, y - ty)
     if wp["kind"] == "pick":
         line = order["lines"][wp["line"]]
@@ -457,7 +516,7 @@ for i, wp in enumerate(waypoints[1:], 1):
     elif i % 3 == 0:
         print(f"  경유점 {i}/{len(waypoints) - 1}  t={sim_t:.1f}s  이동 {dist_total:.1f} m")
 
-x, y, yaw = pose()
+x, y, yaw = true_pose()
 result = {
     "scenario": args.json, "order": order["id"], "robot": ROBOT.asset, "wheel_sign": SIGN,
     "planned_length_m": order["route"]["length_m"], "driven_length_m": round(dist_total, 3),
@@ -465,6 +524,11 @@ result = {
     "completed": steps < args.max_steps,
     "dock_return_err_m": round(math.hypot(x - dock["x"], y - dock["y"]), 4),
     "min_clearance_m": round(min_clear, 4), "min_clearance_at": min_clear_at, "collision_frames": collide_frames,
+    "localize": bool(pf),
+    "localization": ({"rms_pos_m": round(float(np.sqrt(np.mean([e[1] ** 2 for e in loc_err]))), 4), "max_pos_m": round(max(e[1] for e in loc_err), 4),
+                      "final_pos_m": round(loc_err[-1][1], 4), "rms_yaw_deg": round(float(np.sqrt(np.mean([e[2] ** 2 for e in loc_err]))), 2),
+                      "n": len(loc_err)} if pf is not None and loc_err else None),
+    "loc_trace": loc_err if pf is not None else None,
     "arm": bool(arm),
     "teleport": bool(args.teleport),
     "perceive": bool(perceiver),
@@ -478,6 +542,9 @@ res_path.write_text(json.dumps(result, ensure_ascii=False, indent=1))
 print(f"\n저장: {res_path}")
 print(f"  계획 {result['planned_length_m']} m → 주행 {result['driven_length_m']} m, 시뮬 {sim_t:.1f} s, 벽시계 {result['wall_time_s']} s")
 print(f"  최소 간격 {min_clear * 100:.1f} cm ({min_clear_at}), 충돌 프레임 {collide_frames}, 도크 복귀 오차 {result['dock_return_err_m'] * 100:.1f} cm")
+if pf is not None and result["localization"]:
+    L = result["localization"]
+    print(f"  로컬라이제이션 오차: 위치 RMS {L['rms_pos_m'] * 100:.1f} cm, 최대 {L['max_pos_m'] * 100:.1f} cm, 마지막 {L['final_pos_m'] * 100:.1f} cm, yaw RMS {L['rms_yaw_deg']:.1f}°  (순수 오도메트리 마지막 오차 {loc_err[-1][5] * 100:.0f} cm)")
 if arm:
     print(f"  파지 성공 {result['grasp_success']}/{len(picks)}")
 

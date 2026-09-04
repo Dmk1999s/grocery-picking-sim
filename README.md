@@ -172,6 +172,25 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 - `tools/verify_drive.py` 가 결과 JSON 을 10항목으로 본다: 완주, 정차 오차, 충돌 0, 거리 비율, 도크 복귀, 궤적이 바닥 안
 - 팔은 아직 없다. 정차 자세·파지 대상 좌표는 JSON 에 있으니 다음은 그 자리에서 팔을 뻗는 것
 
+### 로컬라이제이션 (라이다 + 매장 지도 + 파티클 필터)
+
+<p align="center">
+  <img src="docs/img/localize_plan.png" width="520" alt="계획 경로, 실제 궤적, 추정 궤적">
+  <br>
+  <sub>계획(초록), 참값 궤적(검정 점선), 라이다 + 파티클 필터 추정(빨강). 주행 제어는 추정 위치로 한다. 68 m 에 RMS 4.6 cm, 최대 10.8 cm</sub>
+</p>
+
+`tools/localize.py` + `drive_isaac --localize`. 매장 모델에서 5 cm 격자 지도를 굽고(진열대·기둥·벽), Carter 앞 범퍼 높이의 2D 라이다(270°, 1°)와 바퀴 오도메트리 + 자이로로 파티클 필터(500개)를 돌린다. **주행은 추정 위치로**, 팔과 카메라는 로봇에 붙어 있으니 로봇 프레임 그대로다.
+
+| seed 7 · ORD_02 (68 m, 정차 4곳) | |
+|---|---|
+| 위치 오차 | RMS 4.6 cm, 최대 10.8 cm, yaw RMS 0.5° |
+| 정차 오차 (참값 기준) | 3.6~11.7 cm (참값 주행 때 ≤ 3.7 cm) |
+| 순수 오도메트리 | 68 m 에 1.3 m 드리프트 (자이로 없이는 14 m — 제자리 회전 때 캐스터가 끌린다) |
+| 종단간 (로컬라이제이션 + 검출기 + 팔) | E2E_PLACEHOLDER |
+
+부통로에 들어서는 순간 오차가 튄다: 평행한 진열대 사이에선 진행 방향이 약하게만 관측된다. 파티클을 진행 방향으로 퍼뜨려 멀리 있는 엔드캡·벽 빔이 고르게 하고, 라이다는 범퍼 높이에 둔다(상판 높이에선 지도 앞면이 아니라 안으로 들어간 선반·상품을 맞춘다). `docs/LOG.md` (13)
+
 ### 팔 (Carter 위 Franka — 정차 자세에서 집어 바구니에)
 
 <p align="center">
@@ -288,6 +307,7 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 | `tools/verify_drive.py` | ✅ | 주행 결과 검증 10항목 |
 | `tools/arm_isaac.py` | ✅ | Carter 위 Franka: 정차 자세에서 집어 바구니에 (Lula IK, 순간이동 실험 모드) |
 | `tools/reach_study.py` | ✅ | 팔 어깨 높이 × 도달 반경 스터디 |
+| `tools/localize.py` | ✅ | 라이다 + 매장 지도 + 파티클 필터 로컬라이제이션 (`drive_isaac --localize`) |
 | `tools/perceive_isaac.py` | ✅ | 헤드 카메라 깊이 + 인스턴스 분할 → 3D 상자 → 파지 (정답 라벨 기반), 데이터셋 기록 |
 | `tools/dataset_isaac.py` | ✅ | 검출기 학습용 합성 데이터 (헤드 카메라 시점 RGB + 2D 박스) |
 | `tools/train_detector.py` | ✅ | YOLOv8n 학습·평가 (별도 venv) |
@@ -376,6 +396,7 @@ tools/
   verify_drive.py    주행·파지 결과 검증
   arm_isaac.py       Carter 위 Franka 파지 모듈 (drive_isaac --arm)
   perceive_isaac.py  헤드 카메라 인식 모듈 (drive_isaac --perceive [--detector])
+  localize.py        지도·파티클 필터 (drive_isaac --localize)
   dataset_isaac.py   검출기 학습용 합성 데이터 생성
   train_detector.py  YOLOv8n 학습·평가
   reach_study.py     팔 어깨 높이 × 도달 스터디

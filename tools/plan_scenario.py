@@ -86,6 +86,10 @@ def main() -> None:
                 label=f"실제 주행 {dr['order']}  {dr['driven_length_m']:.0f} m / {dr['sim_time_s']:.0f} s  최소 간격 {dr['min_clearance_m'] * 100:.0f} cm")
         for pk in dr["picks"]:
             ax.plot(pk["actual"][0], pk["actual"][1], "k+", ms=7, mew=1.2, zorder=13)
+        if dr.get("loc_trace"):
+            lt = dr["loc_trace"]; L = dr.get("localization") or {}
+            ax.plot([t[3] for t in lt], [t[4] for t in lt], color="#d62728", lw=0.8, alpha=0.8, zorder=12,
+                    label=f"추정 위치 (라이다+PF)  RMS {L.get('rms_pos_m', 0) * 100:.1f} cm, 최대 {L.get('max_pos_m', 0) * 100:.0f} cm")
     d = sc["dock"]
     ax.plot(d["x"], d["y"], marker="*", ms=12, color="#222", zorder=12, label="도크")
 
