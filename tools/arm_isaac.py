@@ -334,7 +334,9 @@ class Arm:
             res["ik_err_max_m"] = round(max(res["ik_err_max_m"], err), 4)
             return ok
 
-        self.gripper(FINGER_OPEN)
+        # 빼곡한 진열에서 옆 상품을 치지 않게 손가락을 상품 폭 + 8 mm 로 미리 오므린다 (양쪽 4 mm 여유)
+        width_now = float(abs(np.dot(hi - lo, fwd)))
+        self.gripper(min(FINGER_OPEN, width_now / 2 + 0.008))
         # tuck → 프리그래스프: 직교 좌표 직선 + 손 방향 slerp. pre 는 본체 왼쪽 모서리 위(진열대 앞면 앞 ~20 cm)라
         # tuck 손끝(본체 중심 위)에서 직선으로 가면 경로가 전부 본체 위 공간이다. 관절 보간은 중간에 선반 판을 쳤다
         pos0, q0 = self.tcp_pose()

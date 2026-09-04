@@ -322,6 +322,8 @@ class RobotSpec:
     pick_standoff: float = 0.20  # [설계] 정차 시 본체 측면과 진열대 앞면 사이 거리
     grasp_min_z_above_shelf: float = 0.055  # [표준] 손 몸통 반높이 ~4 cm + 여유. 손끝이 선반 위 이만큼 위에 있어야 한다
     grasp_min_height: float = 0.07          # [설계] 옆에서 집을 수 있는 상품 최소 높이 (= 위 값 + 윗면 여유 1.5 cm)
+    finger_thickness: float = 0.018         # [표준] Franka 손가락 바깥 두께
+    finger_clearance: float = 0.03          # [설계] 옆 상품과 이만큼 틈이 있어야 손가락이 들어간다 (두께 1.8 + 미리 오므린 뒤 여유 ~1 cm)
 
     def arm_mount_z(self) -> float:
         """도달 구의 중심(어깨) 높이. scenario.pick_pose 가 쓴다."""

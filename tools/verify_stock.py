@@ -3,7 +3,7 @@
     python -m tools.verify_stock out/store_stocked.usda
 
 본다:
-  - 모든 상품이 자기 진열대 슬롯 안에 있다 (폭·깊이·높이, 진열대 로컬 좌표로)
+  - 모든 상품이 자기 단 안에 있다 (지주 사이·앞단 뒤·백판 앞·위 선반 아래, 진열대 로컬 좌표로)
   - 밑면이 선반 윗면에 닿아 있다 (떠 있거나 파고들지 않음)
   - 같은 진열대 안에서 상품끼리 겹치지 않는다
   - 참조가 풀렸다 (메시가 실제로 있다), 강체·콜라이더·질량이 붙어 있다
@@ -20,7 +20,6 @@ from itertools import combinations
 from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
 from scene.constants import SHELF, STORE
-from scene.shelf import slot_positions
 from scene.store import placements
 from tools.verify_shelf import Check
 
@@ -62,9 +61,9 @@ def main() -> int:
         if not stock:
             continue
         spec = unit["spec"]
-        slots = {(s["level"], s["index"]): s for s in slot_positions(spec)}
         back_x = spec.depth - spec.back_t
-        half_w = spec.slot_width() / 2
+        half_in = spec.inner_width() / 2
+        heights, fronts, clears = spec.level_heights(), spec.level_fronts(), spec.level_clearances()
         boxes = []
         for item in stock.GetChildren():
             n_items += 1
@@ -80,12 +79,14 @@ def main() -> int:
                 bad_phys.append(item.GetPath())
 
             lo, hi = local_bbox(cache, item, unit_prim)
-            s = slots[(item.GetAttribute("stock:level").Get(), item.GetAttribute("stock:slot").Get())]
-            if abs(lo[2] - s["z"]) > TOL:
-                bad_floor.append((str(item.GetPath()), round(lo[2] - s["z"], 4)))
-            if (hi[2] > s["z"] + s["max_h"] + TOL
-                    or lo[1] < s["y"] - half_w - TOL or hi[1] > s["y"] + half_w + TOL
-                    or lo[0] < s["x_front"] - TOL or hi[0] > back_x + TOL):
+            li = item.GetAttribute("stock:level").Get()
+            z = heights[li]
+            if abs(lo[2] - z) > TOL:
+                bad_floor.append((str(item.GetPath()), round(lo[2] - z, 4)))
+            # 단 안: 위 선반판 아래, 지주 사이, 앞단 여유 뒤 ~ 백판 앞
+            if (hi[2] > z + clears[li] + TOL
+                    or lo[1] < -half_in - TOL or hi[1] > half_in + TOL
+                    or lo[0] < fronts[li] + spec.slot_front_gap - TOL or hi[0] > back_x + TOL):
                 bad_slot.append(str(item.GetPath()))
             boxes.append((str(item.GetPath()), (lo, hi)))
         per_unit_boxes[unit_path] = boxes
@@ -97,7 +98,7 @@ def main() -> int:
     c.true("모든 참조가 풀림 (메시 존재)", not bad_ref, f"실패 {len(bad_ref)}: {bad_ref[:2]}" if bad_ref else "")
     c.true("강체·콜라이더·질량이 붙음", not bad_phys, f"누락 {len(bad_phys)}: {bad_phys[:2]}" if bad_phys else "")
     c.true("밑면이 선반 윗면에 닿음", not bad_floor, f"{len(bad_floor)}개 어긋남 {bad_floor[:2]}" if bad_floor else f"허용 ±{TOL * 1000:.0f} mm")
-    c.true("모든 상품이 자기 슬롯 안", not bad_slot, f"{len(bad_slot)}개 벗어남 {bad_slot[:2]}" if bad_slot else "폭·깊이·높이")
+    c.true("모든 상품이 자기 단 안 (지주 사이·앞단 뒤·백판 앞·위 선반 아래)", not bad_slot, f"{len(bad_slot)}개 벗어남 {bad_slot[:2]}" if bad_slot else "")
     c.true("같은 진열대 안에서 겹치지 않음", not overlaps, f"{len(overlaps)}쌍 {overlaps[:1]}" if overlaps else "")
 
     # 계획과 대조: 개수는 stock.plan 을 같은 인자로 다시 돌려야 정확하다. 여기서는

@@ -82,7 +82,8 @@ for name in names:
     writer.attach([rp])
     # 프레임을 여러 번 돌려 RTX 누적을 수렴시킨다. 마지막 프레임만 쓰면 된다.
     for _ in range(args.frames):
-        rep.orchestrator.step(rt_subframes=4)
+        # 물리를 멈추고 렌더만. 안 멈추면 프레임마다 실시간 경과(RTX 1 s/프레임)만큼 물리가 진행돼 빼곡한 상품이 터진다
+        rep.orchestrator.step(rt_subframes=4, delta_time=0.0, pause_timeline=True)
     rep.orchestrator.wait_until_complete()
     writer.detach()
     rp.destroy()

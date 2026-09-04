@@ -8,9 +8,9 @@ store.usda 는 건드리지 않는다. 새 레이어가 store.usda 를 서브레
 각 진열대 프림 아래 `Stock/Item_NN` 을 추가한다. 상품은 진열대 로컬 좌표에
 놓이므로 진열대가 어디에 어떻게 돌아가 있든 따라간다.
 
-배치 규칙 (실제 진열 관행):
-  - 같은 상품은 옆으로 이어 붙인다 (페이싱). 한 단의 슬롯 몇 개가 한 상품 블록
-  - 앞에서 뒤로 여러 개 세운다 (depth). 슬롯 깊이에 들어가는 만큼, --depth 상한
+배치 규칙 (실제 진열 관행 — 빼곡하게):
+  - 같은 상품은 옆으로 2~5 페이싱 붙여 세운다. 옆 상품과 0.5~1.5 cm. 라벨(넓은 면)이 통로를 본다
+  - 앞에서 뒤로 선반 끝까지 세운다 (최대 6). 앞뒤 틈 1 cm
   - 통로마다 품목군이 다르다 (플래노그램). 실측 전에는 PLANOGRAM 의 잠정 배정
   - seed 를 주면 상품 선택·빈 자리·yaw 가 흔들린다. seed 없으면 결정적 (트윈)
 
@@ -28,7 +28,6 @@ from pathlib import Path
 from pxr import Gf, Sdf, Usd, UsdGeom, UsdSemantics
 
 from scene.constants import SHELF, STORE, ShelfSpec
-from scene.shelf import slot_positions
 from scene.store import placements
 
 CATALOG = Path("assets/ycb/catalog.json")
@@ -41,7 +40,6 @@ PLANOGRAM: dict[int, list[str]] = {
     0: ["식품"], 1: ["식품"], 2: ["식품"], 3: ["식품"],
     4: ["생활용품"], 5: ["생활용품", "주방"], 6: ["주방"], 7: ["문구", "완구", "스포츠"],
 }
-BLOCK_SLOTS = 2          # [설계] 같은 상품이 옆으로 이어지는 슬롯 수
 
 
 def load_catalog(path: Path = CATALOG) -> list[dict]:
@@ -50,10 +48,10 @@ def load_catalog(path: Path = CATALOG) -> list[dict]:
 
 
 def orient(item: dict, slot: dict) -> tuple[float, float, float, float] | None:
-    """상품을 슬롯에 넣을 수 있는 방향을 고른다. (yaw_deg, depth, width, height) 또는 None.
+    """상품을 자리에 넣을 수 있는 방향을 고른다. (yaw_deg, depth, width, height) 또는 None.
 
     상품 로컬 x 가 선반 깊이(X) 방향으로 가는 것이 yaw 0. 90° 돌리면 x↔y.
-    폭이 남는 쪽(슬롯 폭에 여유가 큰 쪽)을 택한다.
+    실제 진열처럼 **넓은 면(라벨)이 통로를 보게** — 통로 방향 폭이 큰 쪽을 택하되 깊이가 들어가야 한다.
     """
     dx, dy, dz = item["dims"]
     if dz > slot["max_h"]:
@@ -61,11 +59,18 @@ def orient(item: dict, slot: dict) -> tuple[float, float, float, float] | None:
     options = []
     for yaw, d, w in ((0.0, dx, dy), (90.0, dy, dx)):
         if w + 2 * SIDE_MARGIN <= slot["max_w"] and d <= slot["max_d"]:
-            options.append((slot["max_w"] - w, yaw, d, w))
+            options.append((w, yaw, d, w))
     if not options:
         return None
     _, yaw, d, w = max(options)
     return yaw, d, w, dz
+
+
+# 빼곡한 진열 [설계] — 실제 마트: 같은 상품이 여러 페이싱 붙어 서고, 옆 상품과 거의 붙고, 뒤로는 선반 끝까지
+FACINGS = (2, 5)         # 같은 상품이 옆으로 이어지는 페이싱 수 (seed 없으면 3)
+SIDE_GAP = (0.005, 0.015)   # 옆 상품과의 틈 (seed 없으면 0.01)
+EDGE_GAP = 0.01          # 지주 옆 여유
+DEPTH_MAX = 6            # 앞뒤 최대 개수 (선반 깊이가 허용하는 만큼)
 
 
 def plan(
@@ -73,10 +78,15 @@ def plan(
     *,
     seed: int | None = None,
     fill: float = 1.0,
-    depth: int = 3,
+    depth: int = DEPTH_MAX,
     aisles: set[int] | None = None,
 ) -> list[dict]:
-    """배치 계획. 각 항목: unit(진열대 배치 dict), slot, product, yaw, x, y, z, k(앞에서부터 몇 번째)."""
+    """배치 계획. 각 항목: unit, slot(열 자리), product, yaw, x, y, z, k(앞에서부터 몇 번째), dims.
+
+    단마다 왼쪽 지주부터 오른쪽으로 상품 블록을 이어 붙인다. 블록 = 같은 상품 FACINGS 개 열(column),
+    열마다 뒤로 depth 개. 열의 '자리'(slot dict)는 시나리오 흔들림·검증이 쓰는 폭·깊이·높이 상한이다.
+    fill < 1 이면 열 단위로 빈 자리가 난다 (실제 매장의 팔린 자리).
+    """
     rng = random.Random(seed)
     by_cat: dict[str, list[dict]] = {}
     for r in catalog:
@@ -92,40 +102,41 @@ def plan(
         if not pool:
             continue
         spec: ShelfSpec = unit["spec"]
-        slots = slot_positions(spec)
-
-        # 단마다 상품 블록을 이어 붙인다. seed 없으면 카탈로그 순서, 있으면 섞는다.
+        inner_w = spec.inner_width()
+        back_x = spec.depth - spec.back_t
+        fronts, clear = spec.level_fronts(), spec.level_clearances()
         order = pool[:] if seed is None else rng.sample(pool, len(pool))
         cursor = 0
-        for li in range(spec.n_levels):
-            level_slots = [s for s in slots if s["level"] == li]
-            si = 0
-            while si < len(level_slots):
+        for li, z in enumerate(spec.level_heights()):
+            x_front = fronts[li] + spec.slot_front_gap
+            max_d = back_x - x_front
+            y = -inner_w / 2 + EDGE_GAP
+            col = 0
+            guard = 0
+            while y < inner_w / 2 - EDGE_GAP - 0.03 and guard < 200:
+                guard += 1
                 product = order[cursor % len(order)]
                 cursor += 1
-                for s in level_slots[si : si + BLOCK_SLOTS]:
+                probe = {"max_w": inner_w / 2 - EDGE_GAP - y, "max_d": max_d, "max_h": clear[li]}
+                o = orient(product, probe)
+                if o is None:
+                    continue
+                yaw, d, w, h = o
+                n_face = 3 if seed is None else rng.randint(*FACINGS)
+                gap = 0.01 if seed is None else rng.uniform(*SIDE_GAP)
+                for f in range(n_face):
+                    if y + w > inner_w / 2 - EDGE_GAP:
+                        break
+                    slot = {"level": li, "index": col, "x_front": x_front, "y": y + w / 2, "z": z,
+                            "max_w": w + 2 * SIDE_MARGIN, "max_d": max_d, "max_h": clear[li]}
+                    col += 1
+                    y += w + gap
                     if seed is not None and rng.random() > fill:
                         continue
-                    o = orient(product, s)
-                    if o is None:
-                        continue
-                    yaw, d, w, h = o
-                    n = min(depth, int((s["max_d"] + FACING_GAP) // (d + FACING_GAP)))
+                    n = min(depth, int((max_d + FACING_GAP) // (d + FACING_GAP)))
                     for k in range(n):
-                        items.append(
-                            {
-                                "unit": unit,
-                                "slot": s,
-                                "product": product,
-                                "yaw": yaw,
-                                "x": s["x_front"] + d / 2 + k * (d + FACING_GAP),
-                                "y": s["y"],
-                                "z": s["z"],
-                                "k": k,
-                                "dims": (d, w, h),
-                            }
-                        )
-                si += BLOCK_SLOTS
+                        items.append({"unit": unit, "slot": slot, "product": product, "yaw": yaw,
+                                      "x": x_front + d / 2 + k * (d + FACING_GAP), "y": slot["y"], "z": z, "k": k, "dims": (d, w, h)})
     return items
 
 
@@ -190,7 +201,7 @@ def main() -> None:
     ap.add_argument("--catalog", default=str(CATALOG))
     ap.add_argument("--seed", type=int, default=None, help="없으면 결정적(트윈), 있으면 시나리오")
     ap.add_argument("--fill", type=float, default=1.0, help="seed 모드에서 슬롯이 채워질 확률")
-    ap.add_argument("--depth", type=int, default=3, help="앞뒤로 세우는 최대 개수")
+    ap.add_argument("--depth", type=int, default=DEPTH_MAX, help="앞뒤로 세우는 최대 개수")
     ap.add_argument("--aisles", default=None, help="채울 부통로만 (예: 0,1). 기본 전부")
     args = ap.parse_args()
 

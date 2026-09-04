@@ -36,7 +36,6 @@ import numpy as np
 from pxr import Gf, Usd, UsdGeom, UsdLux
 
 from scene.constants import ROBOT, SCENARIO, SHELF, STORE, RobotSpec, ScenarioSpec
-from scene.shelf import slot_positions
 from scene.stock import CATALOG, FACING_GAP, PLANOGRAM, SIDE_MARGIN, build_stock, load_catalog, orient
 from scene.stock import plan as stock_plan
 from scene.store import corridors, placements
@@ -399,21 +398,37 @@ def generate(
     candidates = []
     for unit_path in sorted({it["unit"]["path"] for it in items}):
         stock = stage.GetPrimAtPath(f"{unit_path}/Stock")
+        unit = units[unit_path]
+        along = 1 if unit_normal(unit)[0] else 0
+        # 같은 단의 앞 상품 AABB (통로 방향 구간) — 옆 틈 계산용
+        fronts_by_level: dict[int, list] = {}
+        for prim in stock.GetChildren():
+            if prim.GetAttribute("stock:facing").Get() == 0:
+                r_ = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+                fronts_by_level.setdefault(prim.GetAttribute("stock:level").Get(), []).append((str(prim.GetPath()), r_.GetMin()[along], r_.GetMax()[along]))
         for prim in stock.GetChildren():
             if prim.GetAttribute("stock:facing").Get() != 0:
                 continue
             r = cache.ComputeWorldBound(prim).ComputeAlignedRange()
             lo, hi = r.GetMin(), r.GetMax()
+            # 옆 틈: 같은 단 다른 앞 상품까지 통로 방향 거리 (왼쪽·오른쪽 중 작은 것). 없으면 지주까지로 넉넉히 본다
+            me = str(prim.GetPath())
+            gaps = [max(0.0, lo[along] - b) for p_, a, b in fronts_by_level[prim.GetAttribute("stock:level").Get()] if p_ != me and b <= lo[along] + 1e-3]
+            gaps += [max(0.0, a - hi[along]) for p_, a, b in fronts_by_level[prim.GetAttribute("stock:level").Get()] if p_ != me and a >= hi[along] - 1e-3]
+            side_gap = min(gaps) if gaps else 0.5
             center = tuple((lo[i] + hi[i]) / 2 for i in range(3))
-            unit = units[unit_path]
             pose = pick_pose(unit, center)
             # 파지: 손가락이 통로 방향으로 닫힌다 (앞 상품 뒤에는 다음 상품이 붙어 있어 깊이 방향으로는 못 잡는다).
             # 통로 방향 폭 = 진열대 로컬 y 폭. 진열대 회전이 90° 배수라 월드 AABB 에서 바로 읽는다
-            along = 1 if unit_normal(unit)[0] else 0
             width_along = hi[along] - lo[along]
             # 손 몸통이 손끝 위아래로 4 cm 나와 선반 위 5.5 cm 아래로는 못 잡는다. 납작한 것(포크·나이프·바나나)은 뺀다 — 위에서 집는 건 다음
-            pose["graspable"] = width_along <= ROBOT.graspable_width() and (hi[2] - lo[2]) >= ROBOT.grasp_min_height
+            # 빼곡한 진열: 옆 상품과의 틈이 손가락 두께 + 여유(ROBOT.finger_clearance) 이상이어야 손가락이 들어간다.
+            # 실제 마트에서 평행 그리퍼가 못 집는 상품이 얼마나 되는지가 이 필터에서 나온다 (흡착이 필요한 비율)
+            pose["graspable"] = (width_along <= ROBOT.graspable_width() and (hi[2] - lo[2]) >= ROBOT.grasp_min_height
+                                 and side_gap >= ROBOT.finger_clearance)
             pose["grasp_width_m"] = round(width_along, 4)
+            pose["side_gap_m"] = round(float(side_gap), 4)
+            pose["fits_gripper"] = width_along <= ROBOT.graspable_width() and (hi[2] - lo[2]) >= ROBOT.grasp_min_height
             candidates.append(
                 {
                     "prim": str(prim.GetPath()),
@@ -432,7 +447,24 @@ def generate(
                     "stop": pose,
                 }
             )
-    reachable = [c for c in candidates if c["stop"]["reachable"]]
+    # 정차 자세(본체 + 안전여유)가 기둥·진열대·벽과 겹치면 후보에서 뺀다. 기둥이 통로로 10 cm 나온 자리 옆 상품이 그렇다
+    obstacles = []
+    for u in placements(STORE, SHELF):
+        r_ = cache.ComputeWorldBound(stage.GetPrimAtPath(u["path"])).ComputeAlignedRange()
+        obstacles.append((r_.GetMin()[0], r_.GetMin()[1], r_.GetMax()[0], r_.GetMax()[1]))
+    for scope in ("/World/Store/Columns", "/World/Store/Walls"):
+        for prim in stage.GetPrimAtPath(scope).GetChildren():
+            r_ = cache.ComputeWorldBound(prim).ComputeAlignedRange()
+            obstacles.append((r_.GetMin()[0], r_.GetMin()[1], r_.GetMax()[0], r_.GetMax()[1]))
+    for c in candidates:
+        st = c["stop"]
+        a = math.radians(st["yaw_deg"])
+        hl, hw = ROBOT.base_l / 2 + ROBOT.safety_margin, ROBOT.base_w / 2 + ROBOT.safety_margin
+        pts = [(st["x"] + dx * math.cos(a) - dy * math.sin(a), st["y"] + dx * math.sin(a) + dy * math.cos(a)) for dx in (-hl, hl) for dy in (-hw, hw)]
+        fx0, fy0 = min(p_[0] for p_ in pts), min(p_[1] for p_ in pts)
+        fx1, fy1 = max(p_[0] for p_ in pts), max(p_[1] for p_ in pts)
+        st["stop_clear"] = not any(fx0 < ox1 - 1e-3 and ox0 < fx1 - 1e-3 and fy0 < oy1 - 1e-3 and oy0 < fy1 - 1e-3 for ox0, oy0, ox1, oy1 in obstacles)
+    reachable = [c for c in candidates if c["stop"]["reachable"] and c["stop"]["stop_clear"]]
     pickable = [c for c in reachable if c["stop"]["graspable"]]
     by_product: dict[str, list[dict]] = {}
     for c in pickable:
@@ -477,6 +509,9 @@ def generate(
             **pstats,
             "front_items": len(candidates),
             "reachable_front_items": len(reachable),
+            "stop_blocked_front_items": sum(1 for c in candidates if not c["stop"]["stop_clear"]),
+            "fits_gripper_front_items": sum(1 for c in candidates if c["stop"]["fits_gripper"]),
+            "side_clear_front_items": sum(1 for c in candidates if c["stop"]["side_gap_m"] >= ROBOT.finger_clearance),
             "graspable_front_items": sum(1 for c in candidates if c["stop"]["graspable"]),
             "pickable_front_items": len(pickable),
             "arm_mount_z": round(ROBOT.arm_mount_z(), 3),
@@ -496,7 +531,7 @@ def describe(sc: dict) -> str:
         f"  상품 {s['items']}개 / {s['products']}종   슬롯열 {s['columns']}  →  yaw 흔들림 {s['jittered']}  넘어짐 {s['fallen']}  오배치 {s['misplaced']}  (facing 탈락 {s['dropped_facings']})",
         f"  조명 {len(sc['lights'])}개 중 꺼짐 {s['lights_off']}",
         f"  맨 앞 상품 {s['front_items']}개 중 팔 도달 {s['reachable_front_items']}개 (어깨 {s['arm_mount_z']} m, 미도달 단별 {s['unreachable_by_level']}),"
-        f" 그리퍼 폭 안 {s['graspable_front_items']}개, 둘 다 {s['pickable_front_items']}개",
+        f" 그리퍼 폭·높이 안 {s['fits_gripper_front_items']}개, 옆 틈 확보 {s['side_clear_front_items']}개, 셋 다 {s['graspable_front_items']}개, 도달까지 {s['pickable_front_items']}개",
     ]
     for o in sc["orders"]:
         names = ", ".join(l["product"].split("_", 1)[1] for l in o["lines"])
