@@ -173,6 +173,7 @@ def build_stock(out: Path, store_usd: Path, items: list[dict], *, asset_root: Pa
         prim.CreateAttribute("stock:level", Sdf.ValueTypeNames.Int).Set(it["slot"]["level"])
         prim.CreateAttribute("stock:slot", Sdf.ValueTypeNames.Int).Set(it["slot"]["index"])
         prim.CreateAttribute("stock:facing", Sdf.ValueTypeNames.Int).Set(it["k"])
+        prim.CreateAttribute("stock:yaw", Sdf.ValueTypeNames.Float).Set(float(it["yaw"]))
         prim.CreateAttribute("stock:state", Sdf.ValueTypeNames.String).Set(it.get("state", "upright"))
         prim.CreateAttribute("stock:misplaced", Sdf.ValueTypeNames.Bool).Set(bool(it.get("misplaced", False)))
         # 시맨틱 라벨 (Isaac Replicator 가 인스턴스 분할·2D 박스에 쓴다): class = 상품명

@@ -16,6 +16,7 @@
 단위는 전부 미터(m), 킬로그램(kg). USD 스테이지도 metersPerUnit=1.0 이다.
 """
 
+import math
 from dataclasses import dataclass, replace
 
 # ─────────────────────────────────────────────────────────────
@@ -324,6 +325,24 @@ class RobotSpec:
     grasp_min_height: float = 0.07          # [설계] 옆에서 집을 수 있는 상품 최소 높이 (= 위 값 + 윗면 여유 1.5 cm)
     finger_thickness: float = 0.018         # [표준] Franka 손가락 바깥 두께
     finger_clearance: float = 0.03          # [설계] 옆 상품과 이만큼 틈이 있어야 손가락이 들어간다 (두께 1.8 + 미리 오므린 뒤 여유 ~1 cm)
+
+    # 흡착 그리퍼 [설계/표준] — 평행 그리퍼가 빼곡한 진열에서 못 쓰는 것이 확인되어 추가 (docs/LOG.md (14))
+    # 벨로즈형 진공 컵 하나. 앞면에 붙여 당겨 뺀다: 옆 틈이 필요 없고, 앞면이 평평·매끈하면 된다.
+    suction_cup_radius: float = 0.010   # [설계] ⌀20 mm 컵. tools/suction_study.py 스윕에서 단일 컵 최적 (32종 중 61 %).
+                                        # 크면 무겁게 들지만(면적) 굴곡을 못 탄다(요철 ∝ 반경²) — ⌀40 은 21 %
+    suction_cup_len: float = 0.035      # [설계] 손끝(TCP)에서 컵 끝까지. 손가락보다 앞에 나와야 컵이 먼저 닿는다
+    suction_vacuum_kpa: float = 60.0    # [표준] 산업용 진공 이젝터가 만드는 부압 (-60 kPa, 대기압의 60 %)
+    suction_mu: float = 0.5             # [표준] 고무 컵 립 ↔ 종이/플라스틱 표면 마찰. 수직면에서는 무게가 전단이라 이게 한계
+    suction_safety: float = 2.0         # [설계] 안전율 (가감속·기울임 여유)
+    suction_max_gap: float = 0.004      # [표준] 컵 지름 안에서 허용하는 표면 요철 (벨로즈가 메우는 한계)
+    suction_max_tilt_deg: float = 15.0  # [표준] 컵이 견디는 면 기울기
+    suction_touch_gap: float = 0.004    # [설계] 컵 끝을 앞면 앞 이만큼까지 붙인다 (max_grip_distance 안)
+
+    def suction_payload_kg(self, cup_radius: float | None = None) -> float:
+        """수직면에 붙은 컵이 드는 무게. 진공력 = 부압 × 컵 면적, 그 힘에 마찰을 곱한 것이 버티는 전단력."""
+        r = self.suction_cup_radius if cup_radius is None else cup_radius
+        force_n = self.suction_vacuum_kpa * 1000.0 * math.pi * r * r
+        return self.suction_mu * force_n / (9.81 * self.suction_safety)
 
     def arm_mount_z(self) -> float:
         """도달 구의 중심(어깨) 높이. scenario.pick_pose 가 쓴다."""

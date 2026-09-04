@@ -40,6 +40,7 @@ from scene.stock import CATALOG, FACING_GAP, PLANOGRAM, SIDE_MARGIN, build_stock
 from scene.stock import plan as stock_plan
 from scene.store import corridors, placements
 
+SUCTION_TABLE = Path("assets/ycb/suction.json")   # tools/suction_study.py 가 만든 상품×자세별 흡착 판정
 FALLEN_PITCH = -90.0     # rotateY. 상품 윗면이 -X(통로) 쪽으로 눕는다 = 앞으로 넘어짐
 
 
@@ -372,6 +373,7 @@ def generate(
     store_usd: Path,
     catalog_path: Path = CATALOG,
     spec: ScenarioSpec = SCENARIO,
+    gripper: str = "parallel",
     n_orders: int | None = None,
     lines: int | None = None,
     depth: int = 3,
@@ -380,6 +382,7 @@ def generate(
     lines = spec.lines_per_order if lines is None else lines
     rng = random.Random(seed)
     catalog = load_catalog(catalog_path)
+    suction = json.loads(SUCTION_TABLE.read_text()) if (gripper == "suction" and SUCTION_TABLE.exists()) else None
     mesh = MeshPoints(catalog_path.parent / "usd")
 
     # 매장 상태 — stock 의 seed 흐름과 독립인 rng 를 써서 fill 만 바뀌어도 나머지가 안 흔들린다
@@ -426,6 +429,19 @@ def generate(
             # 실제 마트에서 평행 그리퍼가 못 집는 상품이 얼마나 되는지가 이 필터에서 나온다 (흡착이 필요한 비율)
             pose["graspable"] = (width_along <= ROBOT.graspable_width() and (hi[2] - lo[2]) >= ROBOT.grasp_min_height
                                  and side_gap >= ROBOT.finger_clearance)
+            # 흡착: 옆 틈·폭 조건이 없다. 앞면이 컵보다 크고 평평하고 덜 기울고, 무게가 컵 한계 안이면 된다
+            if suction is not None:
+                yaw_key = str(int(round(float(prim.GetAttribute("stock:yaw").Get() or 0.0))))
+                ent = suction["products"].get(prim.GetAttribute("stock:product").Get(), {})
+                st_s = (ent.get("yaw") or {}).get(yaw_key)
+                pose["suction_ok"] = bool(st_s and st_s["ok"])
+                pose["suction_why"] = "" if pose["suction_ok"] else (
+                    "표 없음" if not st_s else ("면이 컵보다 작음" if st_s["too_small"] else
+                    ("무거움" if ent["mass_kg"] > suction["payload_kg"] else
+                     ("기울기" if st_s["tilt_deg"] > suction["tilt_limit_deg"] else "요철"))))
+                pose["cup_z_frac"] = (st_s or {}).get("cup_z_frac", 0.5)
+                pose["sag_mm"] = (st_s or {}).get("sag_mm")
+                pose["tilt_deg"] = (st_s or {}).get("tilt_deg")
             pose["grasp_width_m"] = round(width_along, 4)
             pose["side_gap_m"] = round(float(side_gap), 4)
             pose["fits_gripper"] = width_along <= ROBOT.graspable_width() and (hi[2] - lo[2]) >= ROBOT.grasp_min_height
@@ -465,7 +481,8 @@ def generate(
         fx1, fy1 = max(p_[0] for p_ in pts), max(p_[1] for p_ in pts)
         st["stop_clear"] = not any(fx0 < ox1 - 1e-3 and ox0 < fx1 - 1e-3 and fy0 < oy1 - 1e-3 and oy0 < fy1 - 1e-3 for ox0, oy0, ox1, oy1 in obstacles)
     reachable = [c for c in candidates if c["stop"]["reachable"] and c["stop"]["stop_clear"]]
-    pickable = [c for c in reachable if c["stop"]["graspable"]]
+    key = "suction_ok" if gripper == "suction" else "graspable"
+    pickable = [c for c in reachable if c["stop"].get(key)]
     by_product: dict[str, list[dict]] = {}
     for c in pickable:
         by_product.setdefault(c["product"], []).append(c)
@@ -499,6 +516,7 @@ def generate(
 
     return {
         "seed": seed,
+        "gripper": gripper,
         "usd": str(out_usd),
         "store": str(store_usd),
         "params": {**spec.__dict__, "n_orders": n_orders, "lines_per_order": lines, "depth": depth},
@@ -513,6 +531,7 @@ def generate(
             "fits_gripper_front_items": sum(1 for c in candidates if c["stop"]["fits_gripper"]),
             "side_clear_front_items": sum(1 for c in candidates if c["stop"]["side_gap_m"] >= ROBOT.finger_clearance),
             "graspable_front_items": sum(1 for c in candidates if c["stop"]["graspable"]),
+            "suction_front_items": sum(1 for c in candidates if c["stop"].get("suction_ok")) if suction else None,
             "pickable_front_items": len(pickable),
             "arm_mount_z": round(ROBOT.arm_mount_z(), 3),
             "unreachable_by_level": dict(sorted(unreach_by_level.items())),
@@ -530,8 +549,10 @@ def describe(sc: dict) -> str:
     lines = [
         f"  상품 {s['items']}개 / {s['products']}종   슬롯열 {s['columns']}  →  yaw 흔들림 {s['jittered']}  넘어짐 {s['fallen']}  오배치 {s['misplaced']}  (facing 탈락 {s['dropped_facings']})",
         f"  조명 {len(sc['lights'])}개 중 꺼짐 {s['lights_off']}",
-        f"  맨 앞 상품 {s['front_items']}개 중 팔 도달 {s['reachable_front_items']}개 (어깨 {s['arm_mount_z']} m, 미도달 단별 {s['unreachable_by_level']}),"
-        f" 그리퍼 폭·높이 안 {s['fits_gripper_front_items']}개, 옆 틈 확보 {s['side_clear_front_items']}개, 셋 다 {s['graspable_front_items']}개, 도달까지 {s['pickable_front_items']}개",
+        f"  맨 앞 상품 {s['front_items']}개 중 팔 도달 {s['reachable_front_items']}개 (어깨 {s['arm_mount_z']} m, 미도달 단별 {s['unreachable_by_level']}), "
+        + (f"흡착 가능 {s['suction_front_items']}개" if sc.get("gripper") == "suction" else
+           f"그리퍼 폭·높이 안 {s['fits_gripper_front_items']}개, 옆 틈 확보 {s['side_clear_front_items']}개, 셋 다 {s['graspable_front_items']}개")
+        + f", 정차·도달까지 {s['pickable_front_items']}개",
     ]
     for o in sc["orders"]:
         names = ", ".join(l["product"].split("_", 1)[1] for l in o["lines"])
@@ -549,12 +570,13 @@ def main() -> None:
     ap.add_argument("--orders", type=int, default=None)
     ap.add_argument("--lines", type=int, default=None)
     ap.add_argument("--fill", type=float, default=None)
+    ap.add_argument("--gripper", choices=("parallel", "suction"), default="parallel", help="주문에 넣을 상품을 어느 그리퍼 기준으로 고를지")
     args = ap.parse_args()
 
     out_usd = Path(args.out) if args.out else Path(f"out/scenario_{args.seed:03d}.usda")
     spec = SCENARIO if args.fill is None else ScenarioSpec(**{**SCENARIO.__dict__, "fill": args.fill})
     sc = generate(args.seed, out_usd=out_usd, store_usd=Path(args.store), catalog_path=Path(args.catalog),
-                  spec=spec, n_orders=args.orders, lines=args.lines)
+                  spec=spec, n_orders=args.orders, lines=args.lines, gripper=args.gripper)
     out_json = out_usd.with_suffix(".json")
     out_json.write_text(json.dumps(sc, ensure_ascii=False, indent=1))
     print(f"저장: {out_usd}  +  {out_json}")

@@ -42,6 +42,7 @@ ap.add_argument("--perceive", action="store_true", help="정차 후 헤드 카�
 ap.add_argument("--detector", default=None, help="YOLO 가중치(.pt). 주면 정답 마스크 대신 검출기 박스 + 깊이로 상자를 추정한다 (--perceive 와 함께)")
 ap.add_argument("--localize", action="store_true", help="라이다 + 매장 지도 + 파티클 필터로 위치를 추정해 그걸로 주행한다 (참값 대신)")
 ap.add_argument("--teleport", action="store_true", help="주행 없이 정차 자세로 순간이동 (파지 실험용)")
+ap.add_argument("--suction", action="store_true", help="평행 그리퍼 대신 흡착 컵 (--arm 과 함께)")
 ap.add_argument("--arm", action="store_true", help="Carter 위에 Franka 를 얹고 정차마다 상품을 집어 바구니에 넣는다")
 ap.add_argument("--max-steps", type=int, default=60 * 600, help="안전장치")
 ap.add_argument("--dt", type=float, default=1 / 60)
@@ -109,8 +110,11 @@ robot = WheeledRobot(
 )
 arm = None
 if args.arm:
-    from tools.arm_isaac import Arm
-    arm = Arm(stage, app, init_pose=(dock["x"], dock["y"], math.radians(dock["yaw_deg"])))
+    if args.suction:
+        from tools.suction_isaac import SuctionArm as ArmClass
+    else:
+        from tools.arm_isaac import Arm as ArmClass
+    arm = ArmClass(stage, app, init_pose=(dock["x"], dock["y"], math.radians(dock["yaw_deg"])))
 app.update()
 SimulationManager.setup_simulation(dt=args.dt, device="cpu")
 app_utils.play()
@@ -151,7 +155,7 @@ if args.localize:
 if arm:
     arm.start()
     arm.follow(dock["x"], dock["y"], math.radians(dock["yaw_deg"]))
-    print(f"팔: Franka 베이스 {ROBOT.arm_base_dz:.3f} m, 어깨 {ROBOT.arm_mount_z():.2f} m, tuck 손끝(베이스 기준) {arm.tuck_tcp}, 바구니 위 자세 IK 오차 {arm.over_local_err * 1000:.0f} mm")
+    print(f"팔: {'흡착 컵 ⌀' + str(round(ROBOT.suction_cup_radius * 2000)) + ' mm' if args.suction else '평행 그리퍼'}, Franka 베이스 {ROBOT.arm_base_dz:.3f} m, 어깨 {ROBOT.arm_mount_z():.2f} m, tuck 손끝(베이스 기준) {arm.tuck_tcp}, 바구니 위 자세 IK 오차 {arm.over_local_err * 1000:.0f} mm")
 # 바퀴는 속도 드라이브: 강성 0, 감쇠는 에셋 값이 작으면 올린다
 st, dp = robot.get_dof_gains()
 wi = robot._resolve_wheel_dof_indices()
@@ -510,7 +514,8 @@ for i, wp in enumerate(waypoints[1:], 1):
                          allow_moved=bool(override is not None and picks[-1].get("perception", {}).get("substitute_instance")))
             BRAKE[0] = False
             picks[-1]["grasp"] = g
-            print(f"      파지 {'성공' if g.get('success') else '실패'}  단계 {g['phase']}  계획 대비 이동 {g.get('moved_before_pick_m', 0) * 100:.1f} cm  손가락 간격 {g.get('finger_gap_m', 0) * 100:.1f} cm (폭 {g.get('grasp_width_m', 0) * 100:.1f})  들림 {g.get('lift_m', 0) * 100:.1f} cm  잡음 {g['held_after_retract']}  바구니 {g['in_bin']}  이웃 교란 {g['disturbed_neighbors']}  IK 오차 {g['ik_err_max_m'] * 1000:.0f} mm")
+            gap_txt = (f"붙음 {g.get('attached')}" if args.suction else f"손가락 간격 {(g.get('finger_gap_m') or 0) * 100:.1f} cm (폭 {(g.get('grasp_width_m') or 0) * 100:.1f})")
+            print(f"      파지 {'성공' if g.get('success') else '실패'}  단계 {g['phase']}  계획 대비 이동 {g.get('moved_before_pick_m', 0) * 100:.1f} cm  {gap_txt}  들림 {g.get('lift_m', 0) * 100:.1f} cm  잡음 {g['held_after_retract']}  바구니 {g['in_bin']}  이웃 교란 {g['disturbed_neighbors']}  IK 오차 {g['ik_err_max_m'] * 1000:.0f} mm")
         else:
             tick(int(args.dwell / args.dt))
     elif i % 3 == 0:
@@ -530,6 +535,7 @@ result = {
                       "n": len(loc_err)} if pf is not None and loc_err else None),
     "loc_trace": loc_err if pf is not None else None,
     "arm": bool(arm),
+    "suction": bool(args.suction),
     "teleport": bool(args.teleport),
     "perceive": bool(perceiver),
     "detector": args.detector,
