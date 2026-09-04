@@ -38,6 +38,7 @@ FINGER_MASS = float(os.environ.get("ARM_FINGER_MASS", "0.05"))        # [설계]
 SOLVER_ITERS = int(os.environ.get("ARM_SOLVER_ITERS", "16"))        # [설계] 0 이면 기본
 CARRY_SLOW = float(os.environ.get("ARM_CARRY_SLOW", "1.0"))        # [설계] 카레 구간 시간 배율
 CARRY_FLAT = os.environ.get("ARM_CARRY_FLAT", "1") == "1"            # [설계] 카레 중 손을 수평 유지 (아래로 돌리면 둥근 캔이 빠졌다)
+GRASP_Z_OFFSET = float(os.environ.get("ARM_GRASP_DZ", "-0.03"))   # [설계] 파지 높이 = 상품 중심 − 3 cm. 둥근 병(머스터드)은 아랫몸통이 넓어 패드가 더 잘 문다 (5/7 → 7/7)
 ARM_GAIN_SCALE = 4.0                   # [설계] 관절 드라이브 강성 배율 (감쇠는 √배)
 GRIP_STIFFNESS = float(os.environ.get("ARM_GRIP_STIFF", "5000"))    # [설계] 손가락 위치 드라이브 강성
 GRIP_DAMPING = float(os.environ.get("ARM_GRIP_DAMP", "200"))
@@ -306,7 +307,7 @@ class Arm:
         # 앞쪽 현(弦)에서 잡으면 빗면이 상품을 밀어낸다. 뒤 상품(1 cm 간격)에 손끝이 닿지 않게 상한을 둔다
         grasp = front + n * min(ext_n / 2 + 0.01, ext_n - 0.01)
         # 높이: 상품 중심이되 선반 위 grasp_min_z_above_shelf 이상 (손 몸통이 선반에 닿지 않게), 윗면 1.5 cm 아래까지
-        grasp[2] = min(max(c[2], lo[2] + s.grasp_min_z_above_shelf), hi[2] - 0.015)
+        grasp[2] = min(max(c[2] + GRASP_Z_OFFSET, lo[2] + s.grasp_min_z_above_shelf), hi[2] - 0.015)
         pre = grasp - n * 0.25
         quat = quat_wxyz_from_axes(np.cross(fwd, n), fwd, n)       # 손 z = 접근, 손 y = 손가락 축
         quat_ref = [quat]                                          # step_phase 가 쓰는 현재 손 방향 (카레 때 아래로 바꾼다)
