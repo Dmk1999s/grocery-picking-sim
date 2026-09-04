@@ -12,7 +12,7 @@
 
 USD 에셋 규약
   루트 Xform = 물체 밑면 중심 (스캔 원점이 제각각이라 여기서 맞춘다). Z-up, 미터.
-  RigidBodyAPI + MassAPI(질량) + convexHull 콜라이더. 선반 위에 그냥 놓으면 된다.
+  RigidBodyAPI + MassAPI(질량) + convexDecomposition 콜라이더. 선반 위에 그냥 놓으면 된다.
 """
 
 from __future__ import annotations
@@ -160,7 +160,10 @@ def write_usd(name: str, src_dir: Path) -> dict:
     mass_g, category = YCB_INFO.get(name, (None, None))
     UsdPhysics.RigidBodyAPI.Apply(root.GetPrim())
     UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
-    UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(UsdPhysics.Tokens.convexHull)
+    # convexHull 이 아니라 convexDecomposition. 스캔 메시의 볼록껍질은 밑면이 평평하지 않아(트리거·손잡이가 껍질을
+    # 키운다) 살짝만 돌려 놓아도 넘어진다 — 시나리오에서 윈덱스 96 %, 세정제 19 %, 스펀지 17 % 가 물리 시작 2 초 안에
+    # 쓰러졌다 (tools/verify_settle.py). 분해하면 0.05 %. 인스턴싱이라 에셋당 한 번만 계산된다
+    UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr(UsdPhysics.Tokens.convexDecomposition)
     if mass_g:
         UsdPhysics.MassAPI.Apply(root.GetPrim()).CreateMassAttr(mass_g / 1000.0)
 
