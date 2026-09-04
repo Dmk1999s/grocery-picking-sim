@@ -39,7 +39,10 @@ SOLVER_ITERS = int(os.environ.get("ARM_SOLVER_ITERS", "16"))        # [설계] 0
 CARRY_SLOW = float(os.environ.get("ARM_CARRY_SLOW", "1.0"))        # [설계] 카레 구간 시간 배율
 CARRY_FLAT = os.environ.get("ARM_CARRY_FLAT", "1") == "1"            # [설계] 카레 중 손을 수평 유지 (아래로 돌리면 둥근 캔이 빠졌다)
 ARM_GAIN_SCALE = 4.0                   # [설계] 관절 드라이브 강성 배율 (감쇠는 √배)
-GRIP_STIFFNESS, GRIP_DAMPING, GRIP_MAX_FORCE = 5000.0, 200.0, 70.0   # [표준] Franka Hand 연속 파지력 70 N. 강성은 3 cm 오차에서 포화하게
+GRIP_STIFFNESS = float(os.environ.get("ARM_GRIP_STIFF", "5000"))    # [설계] 손가락 위치 드라이브 강성
+GRIP_DAMPING = float(os.environ.get("ARM_GRIP_DAMP", "200"))
+GRIP_MAX_FORCE = float(os.environ.get("ARM_GRIP_MAXF", "70"))       # [표준] Franka Hand 연속 파지력 70 N
+GRIP_ARMATURE = float(os.environ.get("ARM_GRIP_ARMATURE", "0.05"))  # [설계] 손가락 조인트 armature. 없으면 무거운 상품(1.1 kg)을 닫는 순간 손가락이 1 m 로 폭주
 BIN_SIZE = (0.30, 0.44, 0.20)          # [설계] 상판 뒤쪽 바구니 (x 전후, y 좌우, z 높이), 벽 1 cm. 15 cm 벽은 병이 튀어 넘었다
 BIN_DX = -0.33                         # [설계] 본체 중심 기준 바구니 중심 x → x ∈ [-0.48, -0.18]: 상판 뒤끝(-0.385) 밖으로 10 cm 걸침, Franka 베이스(-0.174) 앞
 
@@ -94,6 +97,12 @@ class Arm:
             d.CreateStiffnessAttr(GRIP_STIFFNESS)
             d.CreateDampingAttr(GRIP_DAMPING)
             d.CreateMaxForceAttr(GRIP_MAX_FORCE)
+            # 에셋은 joint2 최대 속도가 10 m/s (joint1 은 0.2). 헛잡거나 선반에 눌릴 때 손가락이 1 m 까지 튀어나가는 폭주는 여기서 막는다
+            from pxr import PhysxSchema
+            pj = PhysxSchema.PhysxJointAPI.Apply(prim)
+            pj.CreateMaxJointVelocityAttr(0.2)
+            if GRIP_ARMATURE > 0:
+                pj.CreateArmatureAttr(GRIP_ARMATURE)
         mat = UsdShade.Material.Define(self.stage, "/World/Arm/Looks/FingerRubber")
         pm = UsdPhysics.MaterialAPI.Apply(mat.GetPrim())
         pm.CreateStaticFrictionAttr(FINGER_FRICTION)
@@ -365,16 +374,28 @@ class Arm:
         gap0 = res["finger_gap_m"]
         ev("grasp")
         lift = grasp + np.array([0, 0, 0.04])
-        if not step_phase("lift", grasp, lift, 0.6 * CARRY_SLOW):
+
+        def abort(phase):
+            # 파지 이후 실패: 상품을 쥔 채 주행하지 않도록 놓고 접는다 (상품은 선반이나 바닥에 남는다)
+            res["phase"] = phase
+            self.gripper(FINGER_OPEN)
+            self.hold(0.5, tick, dt)
+            self.go_tuck(1.5, tick, dt)
             return res
+
+        if not step_phase("lift", grasp, lift, 0.6 * CARRY_SLOW):
+            return abort("lift_ik_fail")
         self.hold(0.2, tick, dt)
         ev("lift")
         z1 = float(item.get_world_poses()[0].numpy()[0][2])
         res["lifted"] = (z1 - z0) >= 0.03
         res["lift_m"] = round(z1 - z0, 4)
         out = pre + np.array([0, 0, 0.04])
-        if not step_phase("retract", lift, out, 1.2 * CARRY_SLOW):
-            return res
+        if not step_phase("retract", lift, out, 1.8 * CARRY_SLOW):
+            # 수평 자세를 고집한 직선이 안 풀리면 위치만 맞춰 빼낸다 (손 방향은 조금 돌아도 된다)
+            res["retract_fallback"] = True
+            if not self.move_line_pos(self.tcp(), out, 1.2 * CARRY_SLOW, tick, dt):
+                return abort("retract_ik_fail")
         self.hold(0.2, tick, dt)
         ev("retract")
         ip = item.get_world_poses()[0].numpy()[0]
@@ -442,11 +463,7 @@ class Arm:
         res["carry_err_m"] = round(reached, 4)
         ev("over_bin")
         if not ok or reached > 0.05:
-            res["phase"] = "carry_not_reached" if ok else res["phase"] + "_ik_fail"
-            self.gripper(FINGER_OPEN)                # 어디든 놓고 접는다 (기록엔 실패로 남는다)
-            self.hold(0.5, tick, dt)
-            self.go_tuck(1.5, tick, dt)
-            return res
+            return abort("carry_not_reached" if ok else res["phase"] + "_ik_fail")   # 어디든 놓고 접는다 (기록엔 실패로)
         res["phase"] = "release"
         # 두 단계로 놓는다: 70 N 으로 눌린 캔은 손가락을 한 번에 벌리면 튕겨 나간다 (스팸 캔이 바구니 벽을 넘어갔다)
         gap_now = float(self.art.get_dof_positions().numpy()[0][self.finger_idx].sum())
