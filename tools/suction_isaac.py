@@ -25,8 +25,13 @@ from scene.constants import ROBOT, RobotSpec
 from tools.arm_isaac import CARRY_SLOW, FINGER_OPEN, TUCK, Arm, quat_wxyz_from_axes
 
 GRIP_DIST = 0.02        # [설계] 컵이 이 거리 안에 표면을 두면 붙는다 (SurfaceGripper max_grip_distance)
-COAXIAL_LIMIT = float(os.environ.get("SUC_COAXIAL", "60"))    # [표준] 컵을 면에서 떼어내는 축 방향 힘 한계 N (진공력 ⌀20 = 18.8 N 보다 크게 두고, 실제 한계는 아래 전단)
-SHEAR_LIMIT = float(os.environ.get("SUC_SHEAR", "25"))      # [표준] 면을 따라 미끄러지는 전단 한계 N. μ·진공력이 실제 한계지만 PhysX 조인트에는 직접 넣는다
+# 조인트 힘 한계 — **진공 씰의 물리적 한계가 아니다.** 실제 한계는 ⌀20 mm·−60 kPa 에서
+# 축 방향 18.8 N, 전단 9.4 N(μ 0.5)이고, 그건 suction_study 의 무게 필터(0.48 kg)가 이미 강제한다.
+# 여기 값을 그 물리값 근처(25/60 N)로 두면 PhysX 조인트가 보고하는 힘에 솔버 잡음·구속 반력이 섞여
+# 0.1 kg 테니스공도 떨어졌다 (같은 궤적에서 300 N 이면 4/4). 그래서 '가짜 실패'를 없앨 만큼 높게 두고,
+# 무엇이 붙을 수 있는지는 기하·무게 필터가 정하게 한다.
+COAXIAL_LIMIT = float(os.environ.get("SUC_COAXIAL", "200"))
+SHEAR_LIMIT = float(os.environ.get("SUC_SHEAR", "150"))
 RETRY = 0.5             # [설계] 켠 채로 못 붙었을 때 다시 시도하는 간격 s
 SWING_Z = float(os.environ.get("SUC_SWING_Z", "0.45"))   # [설계] 바구니 바닥 위 스윙 고도 m
 
@@ -102,14 +107,21 @@ class SuctionArm(Arm):
         """직교 좌표 경유점들을 관절 공간에서 매끄럽게 잇는다. 각 경유점 IK 는 앞 해를 워밍으로 풀어
         같은 가지에 머물게 하고, 그 사이는 관절 선형 보간으로 간다 (스텝마다 IK 를 다시 풀지 않는다).
         quats 는 경유점마다의 손 방향 — 한 번에 꺾으면 그 각가속도로 흡착이 떨어진다."""
-        sols, warm = [], self.joints()
-        for pt, qt in zip(points, quats):
+        # 안 풀리는 경유점은 건너뛴다 (경로가 조금 달라질 뿐). 끝점만 반드시 풀려야 한다
+        sols, warm, skipped = [], self.joints(), 0
+        for k, (pt, qt) in enumerate(zip(points, quats)):
             sol, err = self.solve(pt, qt, warm=warm)
             res["ik_err_max_m"] = round(max(res.get("ik_err_max_m", 0.0), err), 4)
             if sol is None:
-                return False
+                if k == len(points) - 1:
+                    return False
+                skipped += 1
+                continue
             sols.append(sol)
             warm = sol
+        res["path_skipped"] = skipped
+        if not sols:
+            return False
         per = max(1, int(seconds / dt / len(sols)))
         q0 = self.joints()
         for k, sol in enumerate(sols):
@@ -233,29 +245,46 @@ class SuctionArm(Arm):
         pos_at_grasp = item.get_world_poses()[0].numpy()[0]
         dist0 = float(np.linalg.norm(pos_at_grasp - self.tcp()))
 
-        # 3) 곧게 빼낸다 (흡착은 옆으로 흔들면 전단으로 떨어진다). 그 다음 살짝 든다
-        out = pre + np.array([0, 0, 0.03])
-        if not step_phase("retract", touch, pre, 1.6 * CARRY_SLOW):
+        # 3) 곧게 빼낸다 (흡착은 전단이 약하니 천천히). 빼자마자 **제자리에서** 손목을 아래로 돌려
+        #    상품이 컵 밑에 매달리게 만든다 — 그러면 무게가 전단에서 인장으로 바뀌어 이후 이동이 안전하다
+        if not step_phase("retract", touch, pre, 2.5 * CARRY_SLOW):
             return abort("retract_ik_fail")
-        self.hold(0.3, tick, dt)
-        if not step_phase("lift", pre, out, 0.6 * CARRY_SLOW):
-            return abort("lift_ik_fail")
-        self.hold(0.3, tick, dt)
+        self.hold(0.4, tick, dt)
         ip = item.get_world_poses()[0].numpy()[0]
         res["lift_m"] = round(float(ip[2] - z0), 4)
         res["lifted"] = bool(self.attached() is not None)
         res["held_after_retract"] = res["lifted"]
         ev("retract")
+        if not res["lifted"]:
+            return abort("lost_on_retract")
+
+        fwd_ = np.array([math.cos(yaw), math.sin(yaw), 0.0])
+        quat_down = quat_wxyz_from_axes(np.cross(fwd_, [0, 0, -1.0]), fwd_, [0, 0, -1.0])
+        _, q_now = self.tcp_pose()
+        res["phase"] = "turn_down"
+        okr, err = self.move_line(pre, pre, quat_down, 2.0 * CARRY_SLOW, tick, dt, quat0=q_now)
+        res["ik_err_max_m"] = round(max(res["ik_err_max_m"], err), 4)
+        self.hold(0.3, tick, dt)
+        quat_ref[0] = quat_down
+        out = pre + np.array([0, 0, 0.03])
 
         # 4) 바구니로 (평행 그리퍼와 같은 경로: 위로 → 바구니 위 → 내리기)
         bx, by, bz = self.bin_local
         x, y, yaw = self.base
         cy, sy = math.cos(yaw), math.sin(yaw)
         bin_c = np.array([x + cy * bx - sy * by, y + sy * bx + cy * by, s.spawn_z + bz])
-        quat_down = quat_wxyz_from_axes(np.cross(fwd, [0, 0, -1.0]), fwd, [0, 0, -1.0])
-        # 매달린 상품이 팔 몸통 위를 지나므로 스윙 고도를 높게 잡는다 (낮으면 스윙 끝에서 팔에 걸려 상판에 떨어졌다)
-        high = np.array([out[0], out[1], max(out[2] + 0.10, bin_c[2] + SWING_Z)])
-        over = np.array([bin_c[0], bin_c[1], bin_c[2] + SWING_Z])
+        # 스윙 고도: 높을수록 매달린 상품이 팔·바구니를 안 치지만, 너무 높으면 팔이 안 닿는다(어깨 1.01 m, 도달 0.855).
+        # 바구니 위 자세가 실제로 풀리는 가장 높은 고도를 고른다
+        swing_z = SWING_Z
+        for cand in (SWING_Z, 0.38, 0.32, 0.26):
+            probe = np.array([bin_c[0], bin_c[1], bin_c[2] + cand])
+            sol_, _ = self.solve(probe, quat_down, warm=TUCK)
+            if sol_ is not None:
+                swing_z = cand
+                break
+        res["swing_z"] = swing_z
+        high = np.array([out[0], out[1], bin_c[2] + swing_z])   # 상품 높이에서 스윙 고도로 (위든 아래든)
+        over = np.array([bin_c[0], bin_c[1], bin_c[2] + swing_z])
         drop = np.array([bin_c[0], bin_c[1], bin_c[2] + 0.22])
         held_trace = []
 
@@ -266,25 +295,18 @@ class SuctionArm(Arm):
 
         held_now("retract")
         res["phase"] = "carry"
-        ok = self.move_line_pos(out, high, 1.5 * CARRY_SLOW, tick, dt)
+        # 손은 이미 아래를 보고 있다 (상품이 매달림). 자세를 고정한 채 위로 → 바구니 위로
+        ok = self.move_line(out, high, quat_down, 1.5 * CARRY_SLOW, tick, dt)[0]
+        if not ok or np.linalg.norm(self.tcp() - high) > 0.05:
+            # 자세를 고정한 수직 이동이 안 풀리면 위치만 맞춘다 (매달린 상품은 방향이 조금 틀어져도 된다)
+            res["up_fallback"] = True
+            ok = self.move_line_pos(self.tcp(), high, 1.5 * CARRY_SLOW, tick, dt)
         held_now("up")
         ev("high")
         if ok:
-            # 스윙 구간: 직교 좌표 경유점마다 IK 를 앞 해에서 워밍해 풀고(가지 연속) 그 관절 해들을 이어 붙인다.
-            # 매 스텝 IK 는 가지가 바뀌며 손목이 튀고, 끝점만 푸는 관절 보간은 크게 돌아 — 둘 다 흡착을 떼어냈다
-            from scipy.spatial.transform import Rotation, Slerp
-            _, qh = self.tcp_pose()
-            key = Rotation.from_quat([np.r_[qh[1:], qh[0]], np.r_[quat_down[1:], quat_down[0]]])
-            slerp = Slerp([0.0, 1.0], key)
-            wps, wqs = [], []
-            for i in range(1, 9):
-                t_ = i / 8
-                wps.append(high + (over - high) * t_)
-                qx = slerp(t_).as_quat()
-                wqs.append(np.r_[qx[3], qx[:3]])
-            ok = self.move_path_joint(wps, wqs, 3.0 * CARRY_SLOW, tick, dt, res, held_now)
+            ok = self.move_path_joint([high + (over - high) * (i / 8) for i in range(1, 9)], [quat_down] * 8,
+                                      3.0 * CARRY_SLOW, tick, dt, res, held_now)
             self.hold(0.4, tick, dt)
-            quat_ref[0] = quat_down
             if not ok or np.linalg.norm(self.tcp() - over) > 0.05:
                 res["carry_over_fallback"] = True
                 ok = self.move_line_pos(self.tcp(), over, 2.0 * CARRY_SLOW, tick, dt)
