@@ -28,6 +28,7 @@ GRIP_DIST = 0.02        # [설계] 컵이 이 거리 안에 표면을 두면 붙
 COAXIAL_LIMIT = float(os.environ.get("SUC_COAXIAL", "60"))    # [표준] 컵을 면에서 떼어내는 축 방향 힘 한계 N (진공력 ⌀20 = 18.8 N 보다 크게 두고, 실제 한계는 아래 전단)
 SHEAR_LIMIT = float(os.environ.get("SUC_SHEAR", "25"))      # [표준] 면을 따라 미끄러지는 전단 한계 N. μ·진공력이 실제 한계지만 PhysX 조인트에는 직접 넣는다
 RETRY = 0.5             # [설계] 켠 채로 못 붙었을 때 다시 시도하는 간격 s
+SWING_Z = float(os.environ.get("SUC_SWING_Z", "0.45"))   # [설계] 바구니 바닥 위 스윙 고도 m
 
 
 class SuctionArm(Arm):
@@ -156,7 +157,7 @@ class SuctionArm(Arm):
             return res
 
         # 컵 자리: 앞면의 폭 중앙, 높이는 suction_study 가 고른 지점 (병은 어깨가 아니라 몸통)
-        site = c - n * ext_n / 2
+        site = c - n * ext_n / 2 + n * float(line["stop"].get("face_dx_m", 0.0))
         site[2] = lo[2] + res["cup_z_frac"] * (hi[2] - lo[2])
         pre = site - n * (0.20 + s.suction_cup_len)
         touch = site - n * (s.suction_touch_gap + s.suction_cup_len)
@@ -206,14 +207,18 @@ class SuctionArm(Arm):
             return abort("approach_ik_fail")
         res["grasp_err_m"] = round(float(np.linalg.norm(self.tcp() - touch)), 4)
         # 닿은 자리에서 다시 켜고 붙을 때까지 기다린다 (진공이 자리를 잡는 시간)
-        got = None
-        for _ in range(6):
+        got, press = None, 0
+        for k_ in range(6):
             self.suction(True)
             self.hold(0.3, tick, dt)
             got = self.attached()
             if got:
                 break
-        res["attach_tries"] = _ + 1
+            if k_ % 2 == 1 and press < 3:      # 안 붙으면 3 mm 씩 더 눌러 본다 (표면이 예상보다 안쪽)
+                press += 1
+                self.move_line(self.tcp(), touch + n * 0.003 * press, quat_ref[0], 0.3, tick, dt)
+        res["attach_tries"] = k_ + 1
+        res["press_mm"] = press * 3
         res["attached_prim"] = got
         res["attached"] = got is not None
         ev("grasp")
@@ -248,9 +253,10 @@ class SuctionArm(Arm):
         cy, sy = math.cos(yaw), math.sin(yaw)
         bin_c = np.array([x + cy * bx - sy * by, y + sy * bx + cy * by, s.spawn_z + bz])
         quat_down = quat_wxyz_from_axes(np.cross(fwd, [0, 0, -1.0]), fwd, [0, 0, -1.0])
-        high = np.array([out[0], out[1], max(out[2] + 0.10, bin_c[2] + 0.30)])
-        over = np.array([bin_c[0], bin_c[1], bin_c[2] + 0.30])
-        drop = np.array([bin_c[0], bin_c[1], bin_c[2] + 0.24])
+        # 매달린 상품이 팔 몸통 위를 지나므로 스윙 고도를 높게 잡는다 (낮으면 스윙 끝에서 팔에 걸려 상판에 떨어졌다)
+        high = np.array([out[0], out[1], max(out[2] + 0.10, bin_c[2] + SWING_Z)])
+        over = np.array([bin_c[0], bin_c[1], bin_c[2] + SWING_Z])
+        drop = np.array([bin_c[0], bin_c[1], bin_c[2] + 0.22])
         held_trace = []
 
         def held_now(tag):
@@ -285,7 +291,7 @@ class SuctionArm(Arm):
                 self.hold(0.3, tick, dt)
         held_now("over")
         ev("over")
-        ok = ok and step_phase("carry_down", over, drop, 0.8)
+        ok = ok and step_phase("carry_down", over, drop, 1.0)
         self.hold(0.3, tick, dt)
         held_now("down")
         res["held_trace"] = held_trace

@@ -440,6 +440,7 @@ def generate(
                     ("무거움" if ent["mass_kg"] > suction["payload_kg"] else
                      ("기울기" if st_s["tilt_deg"] > suction["tilt_limit_deg"] else "요철"))))
                 pose["cup_z_frac"] = (st_s or {}).get("cup_z_frac", 0.5)
+                pose["face_dx_m"] = (st_s or {}).get("face_dx_m", 0.0)
                 pose["sag_mm"] = (st_s or {}).get("sag_mm")
                 pose["tilt_deg"] = (st_s or {}).get("tilt_deg")
             pose["grasp_width_m"] = round(width_along, 4)

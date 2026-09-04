@@ -193,8 +193,13 @@ def main() -> None:
             if not st["ok"]:
                 continue
             zf = (st["cz"] - pts[:, 2].min()) / max(1e-6, pts[:, 2].max() - pts[:, 2].min())
+            # 컵 자리의 표면은 AABB 앞면(가장 튀어나온 점)보다 이만큼 안쪽에 있다. 곡면 상품은 이걸 모르면 컵이 안 닿는다
+            a_ = math.radians(yaw)
+            rz_ = np.array([[math.cos(a_), -math.sin(a_), 0], [math.sin(a_), math.cos(a_), 0], [0, 0, 1]])
+            face_dx = float(st["face_x"] - (pts @ rz_.T)[:, 0].min())
             e[str(yaw)] = {"sag_mm": round(st["sag_m"] * 1000, 2), "tilt_deg": round(st["tilt_deg"], 1),
                            "too_small": bool(st["too_small"]), "cup_z_frac": round(float(zf), 3),
+                           "face_dx_m": round(face_dx, 4),
                            "ok": bool(not st["too_small"] and st["sag_m"] <= args.sag
                                       and st["tilt_deg"] <= ROBOT.suction_max_tilt_deg and r["mass_kg"] <= payload)}
         per_yaw[r["name"]] = {"mass_kg": r["mass_kg"], "yaw": e}
