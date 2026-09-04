@@ -36,15 +36,21 @@ def main() -> int:
     print(f"\n{args.json}  ({d['order']}, {d['robot']})\n")
 
     tele = d.get("teleport", False)      # 순간이동 모드(파지 실험)는 주행 항목을 건너뛴다
+    # 로컬라이제이션으로 주행하면 정차 오차 = 제어 오차 + 위치 추정 오차. 참값 주행 5 cm, 추정 주행 12 cm (팔 도달·standoff 여유 안)
+    pos_tol = 0.12 if d.get("localize") else POS_TOL
     c.true("끝까지 주행함 (스텝 한도 안)", d["completed"], f"시뮬 {d['sim_time_s']} s, 벽시계 {d['wall_time_s']} s" + (" (순간이동)" if tele else ""))
     c.eq("정차 수 = 주문 품목 수", len(d["picks"]), len(order["lines"]), tol=0)
     worst_pos = max((p["pos_err_m"] for p in d["picks"]), default=0)
     worst_yaw = max((abs(p["yaw_err_deg"]) for p in d["picks"]), default=0)
-    c.true(f"정차 위치 오차 ≤ {POS_TOL * 100:.0f} cm", worst_pos <= POS_TOL, f"최대 {worst_pos * 100:.1f} cm")
+    c.true(f"정차 위치 오차 ≤ {pos_tol * 100:.0f} cm" + (" (로컬라이제이션 주행)" if d.get("localize") else ""), worst_pos <= pos_tol, f"최대 {worst_pos * 100:.1f} cm")
     c.true(f"정차 yaw 오차 ≤ {YAW_TOL:.0f}°", worst_yaw <= YAW_TOL, f"최대 {worst_yaw:.1f}°")
     c.true("정차가 주문 품목과 1:1", sorted(p["line"] for p in d["picks"]) == list(range(len(order["lines"]))), "")
     c.true("충돌 프레임 0", d["collision_frames"] == 0, f"{d['collision_frames']}프레임")
     c.true("최소 간격 ≥ 0 (장애물 안에 들어간 적 없음)", d["min_clearance_m"] >= 0, f"{d['min_clearance_m'] * 100:.1f} cm @ {d['min_clearance_at']}")
+    if d.get("localization"):
+        L = d["localization"]
+        c.true("위치 추정 오차 RMS ≤ 8 cm, 최대 ≤ 20 cm", L["rms_pos_m"] <= 0.08 and L["max_pos_m"] <= 0.20,
+               f"RMS {L['rms_pos_m'] * 100:.1f} cm, 최대 {L['max_pos_m'] * 100:.1f} cm, yaw RMS {L['rms_yaw_deg']:.1f}°")
     if not tele:
         ratio = d["driven_length_m"] / d["planned_length_m"]
         c.true("주행 거리 / 계획 거리 0.95~1.25", 0.95 <= ratio <= 1.25, f"{d['driven_length_m']} / {d['planned_length_m']} = {ratio:.3f}")
