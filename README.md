@@ -234,6 +234,21 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 
 정직한 범위: 검출·분할은 시뮬 정답 라벨(완벽한 검출기 가정)이고, 3D 위치는 깊이 카메라 기하로 계산한다. "검출기가 맞혔다고 치고 그 뒤 기하가 파지까지 이어지는가"를 본 것이며, 검출기 자체는 여기서 남기는 데이터셋으로 학습하는 것이 다음이다. 카메라를 0.7 m 에 두었을 땐 선반 아래에서 올려다봐 대상의 윗부분만 보였고 높이 오차가 9 cm 였다 — 카메라 높이가 인식 성능을 정한다.
 
+### 검출기 (합성 데이터 → YOLO → 정답 라벨 대체)
+
+<p align="center">
+  <img src="docs/img/dataset_vis.png" width="520" alt="합성 데이터셋 프레임 — 헤드 카메라 시점, 2D 박스">
+  <br>
+  <sub>데이터셋 프레임 하나 (정차 자세의 헤드 카메라 시점, 박스 146개). 로봇·물리 없이 카메라만 옮기므로 프레임당 0.3 s. 정차 오차·조준 오차·조명을 흔든다</sub>
+</p>
+
+| | |
+|---|---|
+| 데이터 | `tools/dataset_isaac.py` — 학습 seed 7 매장 400장, 검증 seed 3 매장 120장 ("다른 날의 매장"), 32 클래스, 프레임당 박스 23~26개, YOLO 형식 |
+| 모델 | YOLOv8n (3.2 M 파라미터, 온보드용), 40 epoch, `tools/train_detector.py` |
+| 검증 매장 성적 | mAP50 **0.89**, mAP50-95 0.76, 정밀도 0.87, 재현율 0.86 (120장, 박스 3,166개). 약한 클래스: 포크 0.36, 나이프 0.70, 주사위 0.71 — 가늘거나 작다. 학습 2.7 분 (A10G, 다른 학습과 공유) |
+| 파지까지 | `drive_isaac --perceive --detector out/detector/best.pt` — 검출 박스 중 계획 위치에 가장 가까운 같은 상품명 박스 → 박스 안 깊이(중앙 ±6 cm) → 3D 상자 → 파지. DETECTOR_PICK_PLACEHOLDER |
+
 ## 검증
 
 생성할 때마다 자동으로 177항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
@@ -273,7 +288,8 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 | `tools/arm_isaac.py` | ✅ | Carter 위 Franka: 정차 자세에서 집어 바구니에 (Lula IK, 순간이동 실험 모드) |
 | `tools/reach_study.py` | ✅ | 팔 어깨 높이 × 도달 반경 스터디 |
 | `tools/perceive_isaac.py` | ✅ | 헤드 카메라 깊이 + 인스턴스 분할 → 3D 상자 → 파지 (정답 라벨 기반), 데이터셋 기록 |
-| 검출기 | ⬜ | 남긴 데이터셋으로 학습 → 정답 라벨 대신 |
+| `tools/dataset_isaac.py` | ✅ | 검출기 학습용 합성 데이터 (헤드 카메라 시점 RGB + 2D 박스) |
+| `tools/train_detector.py` | ✅ | YOLOv8n 학습·평가 (별도 venv) |
 
 ## 쓰는 법
 
@@ -358,7 +374,9 @@ tools/
   verify_settle.py   물리 안정성 검증 (Isaac, 상품 8천 개 2 초)
   verify_drive.py    주행·파지 결과 검증
   arm_isaac.py       Carter 위 Franka 파지 모듈 (drive_isaac --arm)
-  perceive_isaac.py  헤드 카메라 인식 모듈 (drive_isaac --perceive)
+  perceive_isaac.py  헤드 카메라 인식 모듈 (drive_isaac --perceive [--detector])
+  dataset_isaac.py   검출기 학습용 합성 데이터 생성
+  train_detector.py  YOLOv8n 학습·평가
   reach_study.py     팔 어깨 높이 × 도달 스터디
   frames_to_gif.py   프레임 → README 용 GIF
   verify_shelf.py 진열대 검증

@@ -123,6 +123,97 @@ class Perceiver:
             lo[2] = floor_z
         return {"lo": lo, "hi": hi, "n_points": n, "n_used": int(ok.sum()), "u_range": (int(u.min()), int(u.max())), "v_range": (int(v.min()), int(v.max()))}
 
+    # ── 검출기 기반: 정답 마스크 대신 YOLO 박스 + 박스 안 깊이 군집으로 3D 상자
+    def load_detector(self, weights: str) -> None:
+        from ultralytics import YOLO
+        self.det = YOLO(weights)
+        self.det_names = self.det.names
+
+    def project(self, world_pt, robot_pose):
+        """월드 점 → 픽셀 (u, v). 대상이 어디쯤 보여야 하는지(계획) 알기 위해."""
+        M = np.array(self.cam_world_matrix(robot_pose), dtype=float)
+        Minv = np.linalg.inv(M)
+        pc = (np.r_[world_pt, 1.0] @ Minv)[:3]
+        w, h = self.res
+        fx = FOCAL_MM / self.h_ap * w
+        fy = FOCAL_MM / self.v_ap * h
+        d = -pc[2]
+        if d <= 0:
+            return None
+        return (pc[0] / d * fx + w / 2, -pc[1] / d * fy + h / 2)
+
+    def locate_detected(self, product: str, robot_pose, expected_world, floor_z: float | None = None, conf: float = 0.15) -> dict | None:
+        """검출기가 찾은 같은 상품명 박스 중 계획 위치에 가장 가까운 것을 고르고, 박스 안 깊이 픽셀을
+        박스 중앙 깊이 ±6 cm 로 걸러(배경·이웃 제외) 3D 로 올린다. 검출 실패·클래스 불일치는 None."""
+        if self.last is None or not hasattr(self, "det"):
+            return None
+        res = self.det.predict(self.last["rgb"][..., ::-1].copy(), imgsz=640, conf=conf, verbose=False)[0]   # ultralytics 는 numpy 입력을 BGR 로 본다
+        exp_uv = self.project(np.asarray(expected_world, dtype=float), robot_pose)
+        self.last_det = res
+        best, mismatch = None, False
+        for b in res.boxes:
+            name = self.det_names[int(b.cls)]
+            if name != product:
+                continue
+            x0, y0, x1, y1 = [float(v) for v in b.xyxy[0]]
+            cu, cv = (x0 + x1) / 2, (y0 + y1) / 2
+            dist = math.hypot(cu - exp_uv[0], cv - exp_uv[1]) if exp_uv else 0.0
+            if best is None or dist < best[0]:
+                best = (dist, (x0, y0, x1, y1), float(b.conf), name)
+        if best is None and exp_uv is not None:
+            # 같은 상품명이 없으면: 계획 위치(픽셀) 60 px 안의 아무 박스. 검출기가 클래스를 틀린 경우다 — 기록에 남긴다
+            for b in res.boxes:
+                x0, y0, x1, y1 = [float(v) for v in b.xyxy[0]]
+                cu, cv = (x0 + x1) / 2, (y0 + y1) / 2
+                dist = math.hypot(cu - exp_uv[0], cv - exp_uv[1])
+                if dist < 60 and (best is None or dist < best[0]):
+                    best = (dist, (x0, y0, x1, y1), float(b.conf), self.det_names[int(b.cls)])
+                    mismatch = True
+        n_det = len(res.boxes)
+        if best is None:
+            return {"detected": False, "n_det": n_det}
+        px_dist, (x0, y0, x1, y1), c, det_name = best
+        w, h = self.res
+        fx = FOCAL_MM / self.h_ap * w
+        fy = FOCAL_MM / self.v_ap * h
+        cx, cy = w / 2, h / 2
+        # 박스 안쪽 80 % 만 (테두리는 배경이 섞인다)
+        mx, my = (x1 - x0) * 0.1, (y1 - y0) * 0.1
+        u0, u1 = int(max(0, x0 + mx)), int(min(w - 1, x1 - mx))
+        v0, v1 = int(max(0, y0 + my)), int(min(h - 1, y1 - my))
+        if u1 <= u0 or v1 <= v0:
+            return {"detected": True, "n_det": n_det, "empty": True}
+        depth = self.last["depth"][v0:v1, u0:u1]
+        vv, uu = np.mgrid[v0:v1, u0:u1]
+        d = depth.astype(np.float64).ravel(); uu = uu.ravel(); vv = vv.ravel()
+        ok = np.isfinite(d) & (d > 0.05)
+        d, uu, vv = d[ok], uu[ok], vv[ok]
+        if len(d) < 30:
+            return {"detected": True, "n_det": n_det, "empty": True}
+        # 박스 중앙 근처 깊이를 기준으로 ±6 cm 만 (상품 한 개의 깊이 범위). 뒤 배경·앞 이웃을 잘라낸다
+        ref = np.median(d[(np.abs(uu - (u0 + u1) / 2) < (u1 - u0) * 0.2) & (np.abs(vv - (v0 + v1) / 2) < (v1 - v0) * 0.2)]) if len(d) else np.median(d)
+        keep = np.abs(d - ref) < 0.06
+        d, uu, vv = d[keep], uu[keep], vv[keep]
+        xc = (uu + 0.5 - cx) / fx * d
+        yc = -(vv + 0.5 - cy) / fy * d
+        pts_cam = np.c_[xc, yc, -d]
+        M = np.array(self.cam_world_matrix(robot_pose), dtype=float)
+        pts = (np.c_[pts_cam, np.ones(len(pts_cam))] @ M)[:, :3]
+        lo, hi = np.percentile(pts, 2, axis=0), np.percentile(pts, 98, axis=0)
+        if floor_z is not None:
+            lo[2] = floor_z
+        return {"detected": True, "n_det": n_det, "lo": lo, "hi": hi, "n_points": int(len(d)), "n_used": int(len(d)), "conf": round(c, 3),
+                "px_dist_to_plan": round(px_dist, 1), "box": [round(x0), round(y0), round(x1), round(y1)],
+                "class_mismatch": mismatch, "det_class": det_name}
+
+    def save_detections(self, path) -> None:
+        """검출기가 본 대로 그린 프레임 (디버그·README)."""
+        if getattr(self, "last_det", None) is None:
+            return
+        from PIL import Image
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
+        Image.fromarray(self.last_det.plot(line_width=1, font_size=6)[..., ::-1]).save(path)
+
     # ── 데이터셋 기록: RGB + 대상 마스크 오버레이 + 보이는 상품 전부의 2D 박스
     def snapshot(self, out_dir: Path, tag: str, target_prim: str | None = None) -> dict:
         from PIL import Image

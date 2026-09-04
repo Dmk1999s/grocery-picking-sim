@@ -277,14 +277,14 @@ class Arm:
             tick()
 
     # ── 한 번 집기
-    def pick(self, line: dict, item_poses, tick, dt: float, on_event=None, aabb_override=None) -> dict:
+    def pick(self, line: dict, item_poses, tick, dt: float, on_event=None, aabb_override=None, allow_moved: bool = False) -> dict:
         """line: scenario JSON 의 주문 품목. item_poses(): {prim: (x,y,z)} 같은 진열대 상품 전부의 현재 위치."""
         try:
-            return self._pick(line, item_poses, tick, dt, on_event, aabb_override)
+            return self._pick(line, item_poses, tick, dt, on_event, aabb_override, allow_moved)
         finally:
             self.frozen = False
 
-    def _pick(self, line: dict, item_poses, tick, dt: float, on_event=None, aabb_override=None) -> dict:
+    def _pick(self, line: dict, item_poses, tick, dt: float, on_event=None, aabb_override=None, allow_moved: bool = False) -> dict:
         from isaacsim.core.experimental.prims import RigidPrim
         s = self.spec
         n = np.array(line["approach_dir"], dtype=float)           # 통로 → 진열대 (안쪽)
@@ -318,7 +318,7 @@ class Arm:
         height_now = float(hi[2] - lo[2])
         res = {"phase": "start", "ik_err_max_m": 0.0, "lifted": False, "held_after_retract": False, "in_bin": False,
                "disturbed_neighbors": 0, "grasp_width_m": round(width_now, 4), "moved_before_pick_m": round(res_moved, 4)}
-        if width_now > s.gripper_max_w - 0.005 or height_now < s.grasp_min_height or res_moved > 0.10:
+        if width_now > s.gripper_max_w - 0.005 or height_now < s.grasp_min_height or (res_moved > 0.10 and not allow_moved):
             # 계획 때와 다른 자세 (넘어짐 등) — 지금 파지 규칙으로는 못 집는다. 인식이 있었다면 여기서 다른 파지를 골랐을 것
             res["phase"] = "not_graspable_now"
             return res
@@ -372,6 +372,15 @@ class Arm:
         self.hold(0.7, tick, dt)
         fingers = self.art.get_dof_positions().numpy()[0][self.finger_idx]
         res["finger_gap_m"] = round(float(fingers.sum()), 4)          # 닫힌 뒤 손가락 사이 = 잡은 폭. 0 이면 헛잡음
+        # 실제로 잡은 프림: 손끝에 가장 가까운 상품 (검출기가 같은 상품의 다른 개체를 골랐으면 계획 프림과 다르다)
+        tcp_now = self.tcp()
+        near = sorted(((np.linalg.norm(np.asarray(pp) - tcp_now), k) for k, pp in item_poses().items()))
+        if near and near[0][0] < 0.08 and near[0][1] != line["prim"]:
+            res["grasped_prim"] = near[0][1]
+            item = RigidPrim(near[0][1])
+            z0 = float(item.get_world_poses()[0].numpy()[0][2])
+        else:
+            res["grasped_prim"] = line["prim"]
         offset0 = item.get_world_poses()[0].numpy()[0] - self.tcp()
         dist0 = float(np.linalg.norm(offset0))
         gap0 = res["finger_gap_m"]
@@ -485,7 +494,7 @@ class Arm:
         res["phase"] = "tuck"
         self.go_tuck(1.5, tick, dt)
         after = item_poses()
-        res["disturbed_neighbors"] = sum(1 for k, p in after.items() if k != line["prim"] and k in before
+        res["disturbed_neighbors"] = sum(1 for k, p in after.items() if k not in (line["prim"], res.get("grasped_prim")) and k in before
                                          and np.linalg.norm(np.asarray(p) - np.asarray(before[k])) > 0.02)
         res["phase"] = "done"
         res["held_through_carry"] = bool(all(g >= gap0 - 0.01 for _, _, g in held_trace))
