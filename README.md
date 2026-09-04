@@ -207,6 +207,33 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 - **파지가 되기까지 잡은 것**: 에셋 오른쪽 손가락에 드라이브가 없던 것(7 N → 70 N 양쪽), 관절 보간이 선반을 치던 것(직교 좌표 직선 + slerp), 카레 중 IK 반전(위로 → 바구니 위 → 내리기), 손끝 처짐 1.5 cm(강성 ×4), **손가락 질량 14 g vs 상품 0.4 kg**(50 g 으로 → 미끄러짐 2.3 cm → 0.2 cm), 손을 아래로 돌리면 캔이 빠지는 것(수평 유지), 놓을 때 튕김(두 단계). 전부 `docs/LOG.md` (7)
 - 순간이동 모드(`--teleport`)는 주행을 건너뛰고 정차 자세로 바로 옮겨 1.5 분에 4회 파지를 돌린다. 파지 물리를 잡는 데 15번쯤 썼다
 
+### 인식 (헤드 카메라 → 3D 상자 → 파지)
+
+<p align="center">
+  <img src="docs/img/percep_target.png" width="352" alt="헤드 카메라 인스턴스 분할 — 대상 머스터드 병">
+  <img src="docs/img/percep_rgb.png" width="352" alt="헤드 카메라 RGB, 데이터셋 프레임">
+  <br>
+  <sub>왼쪽: 정차 후 헤드 카메라(바닥에서 1.12 m, 팬틸트)가 본 대상(빨강 = 인스턴스 마스크). 오른쪽: 같은 자리의 RGB. 프레임마다 보이는 상품 전부의 2D 박스·가림 비율이 JSON 으로 남는다 (검출기 학습용 합성 데이터)</sub>
+</p>
+
+`tools/perceive_isaac.py` — 파지점을 시뮬 참값이 아니라 **카메라로 추정한 상자**로 잡는다 (`drive_isaac --perceive`).
+
+1. 팬틸트 헤드 카메라를 계획이 알려준 대상 방향으로 돌린다
+2. RGB · 깊이 · 인스턴스 분할(시맨틱 라벨 = 상품명)을 찍는다
+3. 대상 마스크의 깊이 픽셀을 핀홀 모델로 3D 로 올려 월드 점군 → 백분위(2~98 %) 상자
+4. 밑면은 안 보이므로 매장 모델의 **선반 높이**로 채운다. 뒷면도 안 보이므로 앞면 + 통로 방향 폭으로 채운다
+5. 그 상자로 `arm_isaac.pick`
+
+| seed 7 · ORD_04, 정차 4곳 | |
+|---|---|
+| 앞면 위치 오차 | 0~3 mm |
+| 통로 방향 폭 오차 | 7~13 mm (마스크 가장자리가 깎여 작게 나온다) |
+| 높이 오차 | 1~12 mm |
+| 파지 | 4/4 성공 → 바구니 |
+| 두 seed 40곳 | PERCEP_PLACEHOLDER |
+
+정직한 범위: 검출·분할은 시뮬 정답 라벨(완벽한 검출기 가정)이고, 3D 위치는 깊이 카메라 기하로 계산한다. "검출기가 맞혔다고 치고 그 뒤 기하가 파지까지 이어지는가"를 본 것이며, 검출기 자체는 여기서 남기는 데이터셋으로 학습하는 것이 다음이다. 카메라를 0.7 m 에 두었을 땐 선반 아래에서 올려다봐 대상의 윗부분만 보였고 높이 오차가 9 cm 였다 — 카메라 높이가 인식 성능을 정한다.
+
 ## 검증
 
 생성할 때마다 자동으로 177항목을 대조한다. 실패하면 종료 코드 1이라 CI에 바로 걸 수 있다.
@@ -245,7 +272,8 @@ scene/constants.py ──┬──→ 디지털 트윈    실측값 고정 배�
 | `tools/verify_drive.py` | ✅ | 주행 결과 검증 10항목 |
 | `tools/arm_isaac.py` | ✅ | Carter 위 Franka: 정차 자세에서 집어 바구니에 (Lula IK, 순간이동 실험 모드) |
 | `tools/reach_study.py` | ✅ | 팔 어깨 높이 × 도달 반경 스터디 |
-| 인식 | ⬜ | 지금은 시뮬 참값(현재 AABB). 카메라 → 검출 → 파지점 |
+| `tools/perceive_isaac.py` | ✅ | 헤드 카메라 깊이 + 인스턴스 분할 → 3D 상자 → 파지 (정답 라벨 기반), 데이터셋 기록 |
+| 검출기 | ⬜ | 남긴 데이터셋으로 학습 → 정답 라벨 대신 |
 
 ## 쓰는 법
 
@@ -298,6 +326,7 @@ source ~/.isaac_cache_env
 # 팔: 정차마다 집어 바구니에. --teleport 는 주행 없이 정차 자세로 바로 (파지 실험, 1.5 분)
 ~/isaac6-venv/bin/python -m tools.drive_isaac out/scenario_007.json --order 4 --arm --teleport --record --out out/drive_arm
 ~/isaac6-venv/bin/python -m tools.drive_isaac out/scenario_007.json --order 4 --arm --record --out out/drive_arm_full
+~/isaac6-venv/bin/python -m tools.drive_isaac out/scenario_007.json --order 4 --arm --teleport --perceive --out out/drive_percep   # 카메라 추정 상자로 파지 + 데이터셋
 .venv/bin/python -m tools.reach_study out/store_stocked.usda --out docs/img/reach_study.png
 ```
 
@@ -308,7 +337,7 @@ source ~/.isaac_cache_env
 1. **실측** — 마트 한 곳에서 부통로 1~2개. 타일·상품을 자로 쓰는 절차는 `docs/SURVEY.md`
 2. **상품 확장** — YCB 는 마트 상품이 32종뿐이라 통로가 단조롭다. Google Scanned Objects 로 넓힌다
 3. ~~**`scenario.py`**~~ — 완료. 다음은 가림(앞 상품이 뒤 상품을 가리는 배치)·기울어짐(90° 가 아닌 각) 추가
-4. ~~**AMR 주행**~~ ~~**팔 파지**~~ — 완료 (Carter v1 + Franka). 다음: 인식(카메라 → 검출 → 파지점, 지금은 참값), 로컬라이제이션, 0단 도달(리프트), 폭 > 7 cm 상품(흡착), 납작한 상품(위에서 집기)
+4. ~~**AMR 주행**~~ ~~**팔 파지**~~ ~~**인식(정답 라벨 기반)**~~ — 완료. 다음: 검출기 학습(남긴 데이터셋), 로컬라이제이션, 0단 도달(리프트), 폭 > 7 cm 상품(흡착), 납작한 상품(위에서 집기)
 5. **μ 스윕** — 선반·그리퍼 마찰계수는 실측 불가능한 값이라 하나로 고정하지 않고 스윕 축으로 둔다
 
 ## 레포 구조
@@ -329,6 +358,7 @@ tools/
   verify_settle.py   물리 안정성 검증 (Isaac, 상품 8천 개 2 초)
   verify_drive.py    주행·파지 결과 검증
   arm_isaac.py       Carter 위 Franka 파지 모듈 (drive_isaac --arm)
+  perceive_isaac.py  헤드 카메라 인식 모듈 (drive_isaac --perceive)
   reach_study.py     팔 어깨 높이 × 도달 스터디
   frames_to_gif.py   프레임 → README 용 GIF
   verify_shelf.py 진열대 검증

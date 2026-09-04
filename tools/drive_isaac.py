@@ -38,6 +38,7 @@ ap.add_argument("--gif-fps", type=int, default=10)
 ap.add_argument("--gif-width", type=int, default=400)
 ap.add_argument("--gif-frames", type=int, default=120, help="GIF 최대 프레임 (넘으면 건너뛰며 고른다)")
 ap.add_argument("--dwell", type=float, default=1.5, help="정차점에서 머무는 시간 s (팔 없을 때)")
+ap.add_argument("--perceive", action="store_true", help="정차 후 헤드 카메라로 대상 상자를 추정해 그걸로 집는다 (참값 대신). 데이터셋도 남긴다")
 ap.add_argument("--teleport", action="store_true", help="주행 없이 정차 자세로 순간이동 (파지 실험용)")
 ap.add_argument("--arm", action="store_true", help="Carter 위에 Franka 를 얹고 정차마다 상품을 집어 바구니에 넣는다")
 ap.add_argument("--max-steps", type=int, default=60 * 600, help="안전장치")
@@ -112,6 +113,13 @@ app.update()
 SimulationManager.setup_simulation(dt=args.dt, device="cpu")
 app_utils.play()
 app.update()
+perceiver = None
+if args.perceive:
+    from tools.perceive_isaac import Perceiver
+    perceiver = Perceiver(stage, app)
+    if not args.record:
+        import omni.replicator.core as rep
+        rep.create.light(light_type="dome", intensity=1000.0)
 if arm:
     arm.start()
     arm.follow(dock["x"], dock["y"], math.radians(dock["yaw_deg"]))
@@ -378,7 +386,46 @@ for i, wp in enumerate(waypoints[1:], 1):
                     recorder(label=f"pick{len(picks)}_{name}")
 
             BRAKE[0] = True
-            g = arm.pick(line, item_poses, tick, args.dt, on_event=on_event)
+            override = None
+            if perceiver:
+                # 카메라를 계획이 알려준 대상 쪽으로 돌리고 찍는다 (팔은 tuck 상태)
+                perceiver.aim(prev, line["item_center"])
+                tick(6)
+                perceiver.observe()
+                est = perceiver.locate(line["prim"], prev, floor_z=line["item_aabb"][0][2])   # 밑면 = 계획의 선반 높이
+                snap = perceiver.snapshot(out_dir / f"dataset_{tag}", f"pick{len(picks)}", line["prim"])
+                lo_t, hi_t = arm.current_aabb(line["prim"], __import__("isaacsim.core.experimental.prims", fromlist=["RigidPrim"]).RigidPrim(line["prim"]))
+                if est is None:
+                    picks[-1]["perception"] = {"visible": False, "n_boxes": len(snap["boxes"])}
+                    picks[-1]["grasp"] = {"phase": "not_visible", "ik_err_max_m": 0, "lifted": False, "held_after_retract": False, "in_bin": False, "disturbed_neighbors": 0}
+                    print(f"      인식: 대상이 안 보임 (박스 {len(snap['boxes'])}개)")
+                    continue
+                c_est, c_true = (est["lo"] + est["hi"]) / 2, (lo_t + hi_t) / 2
+                nx_, ny_, _ = line["approach_dir"]
+                front_est = float(np.dot(est["lo"] if (nx_ + ny_) > 0 else est["hi"], [nx_, ny_, 0]))
+                front_true = float(np.dot(lo_t if (nx_ + ny_) > 0 else hi_t, [nx_, ny_, 0]))
+                # 추정 상자는 보이는 면(앞·옆·위)만이라 뒷면이 없다. 파지점은 앞면 + 진짜 깊이 대신 '앞면 + 추정 폭' 으로 잡히므로
+                # 뒷면을 앞면 + 통로 방향 폭(정면이 대체로 정사각에 가깝다)으로 채워 넘긴다
+                along = 1 if nx_ else 0
+                width_along = float(est["hi"][along] - est["lo"][along])
+                lo_o, hi_o = est["lo"].copy(), est["hi"].copy()
+                nd = 0 if nx_ else 1
+                if (nx_ + ny_) > 0:
+                    hi_o[nd] = max(hi_o[nd], lo_o[nd] + width_along)
+                else:
+                    lo_o[nd] = min(lo_o[nd], hi_o[nd] - width_along)
+                override = (lo_o, hi_o)
+                picks[-1]["perception"] = {
+                    "visible": True, "n_points": est["n_points"], "n_boxes": len(snap["boxes"]),
+                    "center_err_m": round(float(np.linalg.norm(c_est - c_true)), 4),
+                    "front_err_m": round(abs(front_est - front_true), 4),
+                    "width_err_m": round(abs(width_along - float(hi_t[along] - lo_t[along])), 4),
+                    "height_err_m": round(abs(float(est["hi"][2] - est["lo"][2]) - float(hi_t[2] - lo_t[2])), 4),
+                    "est_aabb": [[round(float(v), 4) for v in lo_o], [round(float(v), 4) for v in hi_o]],
+                }
+                pp = picks[-1]["perception"]
+                print(f"      인식: 점 {pp['n_points']}  앞면 오차 {pp['front_err_m'] * 1000:.0f} mm  폭 오차 {pp['width_err_m'] * 1000:.0f} mm  높이 오차 {pp['height_err_m'] * 1000:.0f} mm  (보이는 박스 {pp['n_boxes']})")
+            g = arm.pick(line, item_poses, tick, args.dt, on_event=on_event, aabb_override=override)
             BRAKE[0] = False
             picks[-1]["grasp"] = g
             print(f"      파지 {'성공' if g.get('success') else '실패'}  단계 {g['phase']}  계획 대비 이동 {g.get('moved_before_pick_m', 0) * 100:.1f} cm  손가락 간격 {g.get('finger_gap_m', 0) * 100:.1f} cm (폭 {g.get('grasp_width_m', 0) * 100:.1f})  들림 {g.get('lift_m', 0) * 100:.1f} cm  잡음 {g['held_after_retract']}  바구니 {g['in_bin']}  이웃 교란 {g['disturbed_neighbors']}  IK 오차 {g['ik_err_max_m'] * 1000:.0f} mm")
@@ -397,6 +444,7 @@ result = {
     "min_clearance_m": round(min_clear, 4), "min_clearance_at": min_clear_at, "collision_frames": collide_frames,
     "arm": bool(arm),
     "teleport": bool(args.teleport),
+    "perceive": bool(perceiver),
     "grasp_success": sum(1 for p in picks if p.get("grasp", {}).get("success")) if arm else None,
     "picks": picks,
     "trace": trace,

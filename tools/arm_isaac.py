@@ -277,14 +277,14 @@ class Arm:
             tick()
 
     # ── 한 번 집기
-    def pick(self, line: dict, item_poses, tick, dt: float, on_event=None) -> dict:
+    def pick(self, line: dict, item_poses, tick, dt: float, on_event=None, aabb_override=None) -> dict:
         """line: scenario JSON 의 주문 품목. item_poses(): {prim: (x,y,z)} 같은 진열대 상품 전부의 현재 위치."""
         try:
-            return self._pick(line, item_poses, tick, dt, on_event)
+            return self._pick(line, item_poses, tick, dt, on_event, aabb_override)
         finally:
             self.frozen = False
 
-    def _pick(self, line: dict, item_poses, tick, dt: float, on_event=None) -> dict:
+    def _pick(self, line: dict, item_poses, tick, dt: float, on_event=None, aabb_override=None) -> dict:
         from isaacsim.core.experimental.prims import RigidPrim
         s = self.spec
         n = np.array(line["approach_dir"], dtype=float)           # 통로 → 진열대 (안쪽)
@@ -294,6 +294,9 @@ class Arm:
         # 밀린 상품이 있다 (세정제가 그랬다). 실제 로봇은 카메라로 이걸 본다
         item = RigidPrim(line["prim"])
         lo, hi = self.current_aabb(line["prim"], item)
+        if aabb_override is not None:             # 인식이 추정한 상자 (--perceive). 참값은 오차 기록에만 쓴다
+            lo_true, hi_true = lo, hi
+            lo, hi = np.asarray(aabb_override[0], dtype=float), np.asarray(aabb_override[1], dtype=float)
         planned = (np.array(line["item_aabb"][0]) + np.array(line["item_aabb"][1])) / 2
         c = (lo + hi) / 2
         res_moved = float(np.linalg.norm(c - planned))
